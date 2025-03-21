@@ -1,21 +1,13 @@
-# Base parameters for ExPert datasets merge
-cores: 4
-norm: false
-log_norm: false
-scale: false
-n_hvg: 2000
-subset_hvg: false
-zero_padding: true
-correction_method: 'scANVI'
-cache: true
-plot: true
-do_umap: true
-log: 'logs'
-output_dir: 'results'
+# I/O
+datasheet: '/home/user/proj_home/ExPert/resources/datasets/meta/test.csv'
+output_dir: 'results/test'
 
-# Datasets to merge (total of 4 sets)
-datasets:
- "DatlingerBock2021": "https://zenodo.org/record/7041849/files/DatlingerBock2021.h5ad"
- "AdamsonWeissman2016_GSM2406675_10X001": "https://zenodo.org/record/7041849/files/AdamsonWeissman2016_GSM2406675_10X001.h5ad"
- "PapalexiSatija2021_eccite_arrayed_RNA": "https://zenodo.org/record/7041849/files/PapalexiSatija2021_eccite_arrayed_RNA.h5ad"
- "AdamsonWeissman2016_GSM2406677_10X005": "https://zenodo.org/record/7041849/files/AdamsonWeissman2016_GSM2406677_10X005.h5ad"
+# Pre-processing
+qc: true
+norm: true
+log_norm: true
+scale: false
+hvg: false
+# Merge & Harmonize
+zero_padding: true
+correction_method: 'skip'

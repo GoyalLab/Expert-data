@@ -1,0 +1,13 @@
+# I/O
+datasheet: '/home/user/proj_home/ExPert/resources/datasets/meta/filtered_datasets_hg38.csv'
+output_dir: 'results/pp_and_merge'
+
+# Pre-processing
+qc: true
+norm: true
+log_norm: true
+scale: false
+hvg: false
+# Merge & Harmonize
+zero_padding: true
+correction_method: 'skip'
