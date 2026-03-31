@@ -41,27 +41,24 @@ def log_decorator(func):
 
 def stream_subset_csr_backed(
     adata: ad.AnnData,
-    mask_or_idx,
+    mask_or_idx: np.ndarray | None = None,
     out_path: str | None = None,
-    chunk_size: int = 5000,
+    chunk_size: int = 50_000,
     sort_indices: bool = True,
     verbose: bool = True,
     compression: str | None = None,
+    dtype: np.dtype = np.int16,
 ):
     import numpy as np
     import h5py
     import logging
     from tqdm import tqdm
     from anndata.experimental import write_elem
-    from anndata._core.sparse_dataset import _CSRDataset
-
     assert adata.isbacked, "AnnData must be in backed mode"
-    X = adata.X
-
-    if not isinstance(X, _CSRDataset):
-        raise ValueError("adata.X must be backed _CSRDataset")
 
     # --- indices ---
+    if mask_or_idx is None:
+        mask_or_idx = np.arange(adata.shape[0])
     mask_or_idx = np.asarray(mask_or_idx)
     if mask_or_idx.dtype == bool:
         idx = np.where(mask_or_idx)[0]
@@ -83,86 +80,83 @@ def stream_subset_csr_backed(
             raise ValueError("No filename provided and adata has no backing file")
         out_path = str(adata.filename).replace(".h5ad", "_subset.h5ad")
 
-    # --- get source adata x attributes ---
-    with h5py.File(adata.filename, "r") as f_in:
+    # --- write file with direct h5py reads ---
+    with h5py.File(adata.filename, "r") as f_in, h5py.File(out_path, "w") as f:
         X_attrs = dict(f_in["X"].attrs)
+        src_indptr = f_in["X/indptr"][:]
+        src_data = f_in["X/data"]
+        src_indices = f_in["X/indices"]
 
-    # --- FIRST PASS: compute nnz ---
-    if verbose:
-        logging.info("[INFO] First pass: counting nnz")
+        # --- compute nnz directly from indptr (no data read needed) ---
+        row_lengths = src_indptr[idx + 1] - src_indptr[idx]
+        nnz = int(np.sum(row_lengths))
 
-    nnz = 0
-    loop = range(0, n_obs_out, chunk_size)
-    if verbose:
-        loop = tqdm(loop)
+        if verbose:
+            logging.info(f"[INFO] nnz in subset: {nnz:,}")
+            logging.info(f"[INFO] Writing to {out_path}")
 
-    for i in loop:
-        batch = idx[i:i + chunk_size]
-        chunk = X[batch]              # small CSR matrix
-        nnz += chunk.nnz
-
-    if verbose:
-        logging.info(f"[INFO] nnz in subset: {nnz:,}")
-
-    # --- write file ---
-    if verbose:
-        logging.info(f"[INFO] Writing to {out_path}")
-
-    with h5py.File(out_path, "w") as f:
+        # --- pre-allocate output datasets to final size ---
         X_group = f.create_group("X")
-
         data_ds = X_group.create_dataset(
             "data",
-            shape=(0,),
-            maxshape=(None,),
-            dtype=np.float32,
+            shape=(nnz,),
+            dtype=dtype,
             compression=compression,
             chunks=True,
         )
 
         indices_ds = X_group.create_dataset(
             "indices",
-            shape=(0,),
-            maxshape=(None,),
+            shape=(nnz,),
             dtype=np.int32,
             compression=compression,
             chunks=True,
         )
 
         indptr_out = np.zeros(n_obs_out + 1, dtype=np.int64)
-
-        write_ptr = 0
         out_row = 0
+        write_ptr = 0
+
         loop = range(0, n_obs_out, chunk_size)
         if verbose:
             loop = tqdm(loop)
         for i in loop:
             batch = idx[i:i + chunk_size]
-            chunk = X[batch]  # CSR
+            batch_starts = src_indptr[batch]
+            batch_ends = src_indptr[batch + 1]
+            batch_lengths = batch_ends - batch_starts
 
-            data = chunk.data
-            indices = chunk.indices
-            indptr = chunk.indptr
+            # --- read data/indices via contiguous groups for efficiency ---
+            data_parts = []
+            indices_parts = []
+            if len(batch) > 1:
+                breaks = np.where(np.diff(batch) != 1)[0] + 1
+            else:
+                breaks = np.array([], dtype=int)
+            group_starts = np.concatenate([[0], breaks])
+            group_ends = np.concatenate([breaks, [len(batch)]])
 
-            # --- append data ---
-            old_size = data_ds.shape[0]
-            new_size = old_size + len(data)
+            for gs, ge in zip(group_starts, group_ends):
+                span_start = int(batch_starts[gs])
+                span_end = int(batch_ends[ge - 1])
+                if span_end > span_start:
+                    data_parts.append(src_data[span_start:span_end])
+                    indices_parts.append(src_indices[span_start:span_end])
 
-            data_ds.resize((new_size,))
-            indices_ds.resize((new_size,))
+            chunk_data = np.concatenate(data_parts) if data_parts else np.array([], dtype=dtype)
+            chunk_indices = np.concatenate(indices_parts) if indices_parts else np.array([], dtype=np.int32)
 
-            data_ds[old_size:new_size] = data
-            indices_ds[old_size:new_size] = indices
+            # --- write into pre-allocated datasets ---
+            new_ptr = write_ptr + len(chunk_data)
+            data_ds[write_ptr:new_ptr] = chunk_data
+            indices_ds[write_ptr:new_ptr] = chunk_indices
+            write_ptr = new_ptr
 
-            # --- update indptr ---
-            for r in range(chunk.shape[0]):
-                start = indptr[r]
-                end = indptr[r + 1]
-                length = end - start
-
-                write_ptr += length
-                indptr_out[out_row + 1] = write_ptr
-                out_row += 1
+            # --- vectorized indptr update ---
+            indptr_out[out_row + 1 : out_row + 1 + len(batch_lengths)] = (
+                indptr_out[out_row] + np.cumsum(batch_lengths)
+            )
+            out_row += len(batch_lengths)
 
         # --- write indptr ---
         X_group.create_dataset("indptr", data=indptr_out, compression=compression)
@@ -171,6 +165,7 @@ def stream_subset_csr_backed(
         X_group.attrs.update(X_attrs)
         X_group.attrs["shape"] = (n_obs_out, n_vars)
         # --- obs ---
+        logging.info(f"Adding .obs")
         obs = adata.obs.iloc[idx].copy()
         cat_cols = obs.select_dtypes(include="category").columns
         for col in cat_cols:
@@ -178,9 +173,11 @@ def stream_subset_csr_backed(
 
         write_elem(f, "obs", obs)
         # --- var ---
+        logging.info(f"Adding .var")
         write_elem(f, "var", adata.var)
         # --- obsm ---
         if len(adata.obsm) > 0:
+            logging.info(f"Adding .obsm")
             obsm = {}
             for k, v in adata.obsm.items():
                 try:
@@ -190,11 +187,13 @@ def stream_subset_csr_backed(
             write_elem(f, "obsm", obsm)
 
         # --- varm ---
+        logging.info(f"Adding .varm")
         if len(adata.varm) > 0:
             write_elem(f, "varm", dict(adata.varm))
 
         # --- uns ---
         if len(adata.uns) > 0:
+            logging.info(f"Adding .uns")
             uns_group = f.create_group("uns")
             for k, v in dict(adata.uns).items():
                 try:

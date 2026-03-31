@@ -61,7 +61,7 @@ dependencies:
   - bzip2=1.0.8=h4bc722e_7
   - c-ares=1.32.3=h4bc722e_0
   - c-blosc2=2.15.1=hc57e6cf_0
-  - ca-certificates=2025.11.12=hbd8a1cb_0
+  - ca-certificates=2026.2.25=hbd8a1cb_0
   - cached-property=1.5.2=hd8ed1ab_1
   - cached_property=1.5.2=pyha770c72_1
   - cachetools=5.5.0=pyhd8ed1ab_1
@@ -69,7 +69,7 @@ dependencies:
   - cairomm-1.16=1.16.2=h7e731d7_1
   - captum=0.6.0=pyhd8ed1ab_0
   - catalogue=2.0.10=py311h38be061_0
-  - certifi=2025.11.12=pyhd8ed1ab_0
+  - certifi=2026.2.25=pyhd8ed1ab_0
   - cffi=1.17.1=py311hf29c0ef_0
   - chardet=5.2.0=py311h38be061_2
   - charls=2.4.2=h59595ed_0
@@ -390,7 +390,7 @@ dependencies:
   - openjpeg=2.5.2=h488ebb8_0
   - openldap=2.6.8=hedd0468_0
   - openpyxl=3.1.5=py311h50c5138_1
-  - openssl=3.6.0=h26f9b46_0
+  - openssl=3.6.1=h35e630c_1
   - opt-einsum=3.4.0=hd8ed1ab_1
   - opt_einsum=3.4.0=pyhd8ed1ab_0
   - optax=0.2.3=pyhd8ed1ab_0
@@ -503,7 +503,7 @@ dependencies:
   - scikit-learn=1.5.2=py311h57cc02b_1
   - scikit-misc=0.1.4=py311ha9cf758_4
   - scipy=1.14.1=py311he9a78e4_1
-  - scvi-tools=1.2.2.post1=pyhd8ed1ab_1
+  - scvi-tools=1.4.2=pyhd8ed1ab_0
   - seaborn=0.13.2=hd8ed1ab_2
   - seaborn-base=0.13.2=pyhd8ed1ab_2
   - session-info=1.0.0=pyhd8ed1ab_0
