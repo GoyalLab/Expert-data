@@ -1,6 +1,5 @@
 import numpy as np
 import pandas as pd
-import pickle
 import logging
 import anndata as ad
 import scanpy as sc
