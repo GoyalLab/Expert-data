@@ -2,7 +2,10 @@ __pycache__/
 .ipynb_checkpoints
 *.h5ad
 .snakemake
+.vscode
+.claude
 logs
+.logs
 results
 scratch
 figures
