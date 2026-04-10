@@ -7,8 +7,8 @@ log_dir: 'test/logs'
 # Slurm config
 resources:
   memory:
-    min_mem: 20                 # Minimum RAM (GB)
-    default: 100
+    min_mem: 220                 # Minimum RAM (GB)
+    default: 220
     max_mem: 220                # Maximum RAM (GB) of default partition
 
   partitions:

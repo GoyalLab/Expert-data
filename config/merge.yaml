@@ -1,13 +1,38 @@
 # I/O
-datasheet: 'resources/datasets/meta/filtered_datasets_hg38.csv'
-output_dir: 'results'
+datasheet: 'resources/datasets/meta/training.csv'
+output_dir: '/projects/b1042/GoyalLab/lschwartz/dl/data/merge'
+cache_dir: '/projects/b1042/GoyalLab/lschwartz/dl/perturb-seq/data'
 
-# Pre-processing
-qc: true
-norm: false
-log_norm: false
-scale: false
-hvg: false
-# Merge & Harmonize
-zero_padding: true
-correction_method: 'skip'
+# Set a slightly higher number of control cells to get more robust efficiency scores
+n_ctrl: 10000
+min_cells_per_perturbation: 50                # Filter perturbations for a minimum number of cells WITHIN a dataset
+min_cells_per_class: 50                    # Minimum number of cells per class (perturbation) ACROSS datasets
+merge_method: 'dask'
+# Set pre-calculated gene embedding path
+gene_embedding: 'resources/gene_embeddings/claude_sonnet_4.5/emb/gene_embeddings_BioLORD.pkl'
+
+# Slurm config
+resources:
+  memory:
+    min_mem: 100                 # Minimum RAM (GB)
+    default: 200
+    max_mem: 220                # Maximum RAM (GB) of default partition, switch to hi-mem beyond that
+
+  partitions:
+    default: 'genomics'
+    high_mem: 'genomics-himem'
+    gpu: 'gengpu'
+  
+  jobs:
+    meta_info:
+      time: '48:00:00'
+      mem: '220GB'
+    filter_cells_by_efficiency:
+      time: '48:00:00'
+      threads: 1
+    prepare_dataset:
+      time: '48:00:00'
+      mem: '220GB'
+    merge_datasets:
+      time: '48:00:00'
+      mem: '100GB'
