@@ -1,49 +1,25 @@
-# ExPert
+# ExPert-data
 
-Part A: A Snakemake pipeline for downloading and merging perturbation screening experiments.
-Part B: AI framework for perturbation prediction in scRNA-seq data.
+A Snakemake pipeline for downloading and merging Perturb-seq experiments. The generated dataset can be used to train an [ExPert](https://github.com/GoyalLab/ExPert) model.
 
-## 🚀 A: Quick Start
+## 🚀 Quick Start
 
-1. Create environment:
+1. Create and activate environment:
 ```bash
 mamba env create -f environment.yml
-mamba activate ExPert
+mamba activate ExPert-data
 ```
 
-2. Configure pipeline (optional):
-    - Adjust parameters in `config/defaults.yaml`
+2. Create config file:
+    - Default parameters are loaded from `config/defaults.yaml`
+    - Specify your I/O paths and overwrite settings with a custom `config/settings.yaml` file
 
-3. Run pipeline:
+3. Run pipeline with config file:
 ```bash
 # Locally
-snakemake --cores 10 --verbose --configfile "config/defaults.yaml" --use-conda
+snakemake --cores 10 --verbose --configfile "config/settings.yaml" --use-conda
 
 # On SLURM
 # Specify slurm account in: workflow/profiles/slurm/settings.json
-snakemake --cores 1 --verbose --configfile "config/defaults.yaml" --profile "workflow/profiles/slurm" --use-conda
+snakemake --cores 1 --verbose --configfile "config/settings.yaml" --profile "workflow/profiles/slurm" --use-conda
 ```
-
-## 🚀 B: Training an ExPert Model
-
-Our Variational Autoencoder (VAE) model predicts genetic perturbations in single-cell RNA sequencing data.
-
-### Key Components
-
-- **Interactive Demo**: `vae/notebooks/TrainParam.ipynb`
-- **Configuration**: `resources/params/defaults.yaml`
-
-### Core Architecture
-
-- **Main Module**: `vae/src/modules/_xpert.py`
-- **Model Implementation**: `vae/src/models/_expert.py`
-- **Neural Network Components**:
-  - Located in `vae/src/modules/_base.py`
-  - Includes: Encoder, DecoderSCVI, ContextClassAligner, MultiHeadAttention, FunnelFCLayers, Block
-
-### Training
-
-- **Training Plan**: `vae/src/_train/expert_plans.py::ContrastiveSupervisedTrainingPlan`
-- **Contrastive Learning**:
-  - Sampler: `vae/src/data/_contrastive_sampler.py`
-  - Loader: `vae/src/data/_contrastive_loader.py`

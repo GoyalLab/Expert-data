@@ -1,4 +1,4 @@
-name: ExPert
+name: ExPert-data
 channels:
   - biobuilds
   - bioconda
