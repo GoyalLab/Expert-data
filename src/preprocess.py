@@ -338,7 +338,7 @@ def ens_to_symbol(adata: ad.AnnData) -> ad.AnnData:
 def _find_match_idx(target: Iterable[str], ref: Iterable[str]) -> int:
     t = np.array(target)
     r = np.array(ref)
-    target_idc, _ = np.where(t.reshape(-1, 1)==r)
+    _, target_idc = np.where(r.reshape(-1, 1)==t)
     if target_idc.shape[0] == 0:
         raise ValueError(f'Could not find match between target: {t} and reference: {r}.')
     return target_idc[0]

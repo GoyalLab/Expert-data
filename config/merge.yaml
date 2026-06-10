@@ -6,15 +6,13 @@ cache_dir: '/projects/b1042/GoyalLab/lschwartz/dl/perturb-seq/data'
 # Set a slightly higher number of control cells to get more robust efficiency scores
 n_ctrl: 10000
 min_cells_per_perturbation: 50                # Filter perturbations for a minimum number of cells WITHIN a dataset
-min_cells_per_class: 50                    # Minimum number of cells per class (perturbation) ACROSS datasets
-merge_method: 'dask'
-# Set pre-calculated gene embedding path
-gene_embedding: 'resources/gene_embeddings/claude_sonnet_4.5/emb/gene_embeddings_BioLORD.pkl'
+min_cells_per_class: 10                    # Minimum number of cells per class (perturbation) ACROSS datasets
+merge_method: 'concat_on_disk'
 
 # Slurm config
 resources:
   memory:
-    min_mem: 100                 # Minimum RAM (GB)
+    min_mem: 50                 # Minimum RAM (GB)
     default: 200
     max_mem: 220                # Maximum RAM (GB) of default partition, switch to hi-mem beyond that
 
@@ -26,13 +24,10 @@ resources:
   jobs:
     meta_info:
       time: '48:00:00'
-      mem: '220GB'
+      mem: '125GB'
     filter_cells_by_efficiency:
       time: '48:00:00'
       threads: 1
-    prepare_dataset:
-      time: '48:00:00'
-      mem: '220GB'
     merge_datasets:
       time: '48:00:00'
-      mem: '100GB'
+      mem: '50GB'

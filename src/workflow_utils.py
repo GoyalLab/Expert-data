@@ -36,7 +36,8 @@ def hash(s: str, d: int = 4):
     return hashlib.shake_128(s.encode('utf-8')).hexdigest(d)
 
 def get_param_hash(p: dict, dataset_indices: list[str], d: int = 8):
-    blacklist = {'log_dir', 'output_dir', 'cache_dir', 'plot_dir', 'resources'}
+    blacklist = {'log_dir', 'output_dir', 'cache_dir', 'plot_dir', 'resources',
+                  'benchmark_sizes', 'benchmark_n_folds', 'benchmark_context_groups'}
     ps = p.copy()
     # sort dict
     ps = dict(sorted(p.items()))

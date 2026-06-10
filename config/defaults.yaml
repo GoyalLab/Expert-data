@@ -40,6 +40,13 @@ var_merge: 'union'                   # Choose intersection or union of genes for
 gene_embedding: ''                          # Set path to gene embedding to add to meta-set, will be used to describe perturbations
 context_embedding: ''                       # Set path to context embedding TODO: (scTab will be used by default)
 add_emb_for_features: false                 # Whether to add embedding information on a feature level
+## Split into control and perturbed
+split_ctrl: true                            # Creates two output .h5ad files for control and perturbed cells
+
+## Benchmark splits
+benchmark_sizes: [200, 1000, -1]            # List of perturbation subset sizes for nested benchmark splits, e.g. [200, 1000]. Empty = skip.
+benchmark_n_folds: 6                        # Number of OOD folds per benchmark split
+benchmark_context_groups: 'auto'            # How to group contexts for OOD folds: 'auto', 'none', or dict
 
 ## Other:
 cache: true                                 # Whether to cache existing runs or re-run everything
@@ -70,12 +77,12 @@ resources:
 
   jobs:
     download_dataset:
-      time: '48:00:00'
+      time: '12:00:00'
       mem: '20GB'
 
     meta_info:
-      time: '48:00:00'
-      mem: '20GB'
+      time: '2:00:00'
+      mem: '120GB'
 
     process_dataset:
       time: '48:00:00'
@@ -99,16 +106,25 @@ resources:
       mem: '20GB'
 
     prepare_dataset:
-      time: '48:00:00'
+      time: '4:00:00'
+      mem: '10GB'
 
     merge_datasets:
-      time: '48:00:00'
-      mem: '200GB'
+      time: '4:00:00'
+      mem: '50GB'
 
     harmonize:
       time: '48:00:00'
       mem: '200GB'
 
     add_gene_embedding:
-      time: '48:00:00'
+      time: '4:00:00'
       mem: '200GB'
+
+    split_ctrl:
+      time: '4:00:00'
+      mem: '20GB'
+
+    gen_benchmark_split:
+      time: '48:00:00'
+      mem: '20GB'

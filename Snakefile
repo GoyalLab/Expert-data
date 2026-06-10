@@ -38,8 +38,8 @@ save_config(config, os.path.join(OUTPUT_DIR, 'config.yaml'))
 # Output files
 PERTURBATION_POOL_FILE = os.path.join(OUTPUT_DIR, 'perturbation_pool.csv')
 FEATURE_POOL_FILE = os.path.join(OUTPUT_DIR, 'feature_pool.csv')
-MERGED_OUTPUT_FILE = os.path.join(OUTPUT_DIR, 'perturb_metaset.h5ad')
-HARMONIZED_OUTPUT_FILE = os.path.join(OUTPUT_DIR, 'perturb_metaset_harmonized.h5ad')
+MERGED_OUTPUT_FILE = os.path.join(OUTPUT_DIR, 'database.h5ad')
+HARMONIZED_OUTPUT_FILE = os.path.join(OUTPUT_DIR, 'database_harmonized.h5ad')
 # download_datasets
 DWNL_DIR = os.path.join(CACHE_DIR, 'raw')
 # process_dataset
@@ -60,19 +60,37 @@ MODEL_FILE = os.path.join(MODEL_DIR, 'model.pt')
 OUTPUT_FILE = MERGED_OUTPUT_FILE if config['correction_method']=='skip' else HARMONIZED_OUTPUT_FILE
 # add gene embedding to output file
 if config['gene_embedding'] is not None and config['gene_embedding'] != '' and os.path.exists(config['gene_embedding']):
-    OUTPUT_FILE_W_EMB = f"{OUTPUT_FILE.rstrip('.h5ad')}_w_emb.h5ad"
-    ENPOINT = OUTPUT_FILE_W_EMB
+    OUTPUT_FILE_W_EMB = f"{OUTPUT_FILE.removesuffix('.h5ad')}_w_emb.h5ad"
+    SPLIT_INPUT = OUTPUT_FILE_W_EMB
 else:
     OUTPUT_FILE_W_EMB = None
-    ENPOINT = OUTPUT_FILE
-
+    SPLIT_INPUT = OUTPUT_FILE
+# split data into control and perturbed if toggled
+if config['split_ctrl']:
+    ENDPOINT = f"{SPLIT_INPUT.removesuffix('.h5ad')}_perturbed.h5ad"
+    CTRL_PATH = f"{SPLIT_INPUT.removesuffix('.h5ad')}_ctrl.h5ad"
+else:
+    ENDPOINT = SPLIT_INPUT
+    CTRL_PATH = None
+# When no harmonize/embedding sits between merge and split, do both in one pass
+MERGE_AND_SPLIT = config['split_ctrl'] and SPLIT_INPUT == MERGED_OUTPUT_FILE
+# Benchmark splits
+BENCHMARK_SIZES = [int(s) for s in config.get('benchmark_sizes', [])]
+BENCHMARK_DIR = os.path.join(OUTPUT_DIR, 'benchmarks', 'splits')
+BENCHMARK_INPUT = ENDPOINT if config['split_ctrl'] else SPLIT_INPUT
 
 ## PIPELINE START
 
+# Collect final output file
+ALL_OUTPUTS = [ENDPOINT]
+if BENCHMARK_SIZES:
+    ALL_OUTPUTS += expand(
+        os.path.join(BENCHMARK_DIR, "{size}", "metadata.json"),
+        size=BENCHMARK_SIZES,
+    )
 rule all:
     input:
-        ENPOINT
-
+        ALL_OUTPUTS
 
 # 0. Download each dataset
 rule download_dataset:
@@ -88,7 +106,7 @@ rule download_dataset:
         **get_job_resources(
             config['resources'], 
             job_name='download_dataset',
-            output=os.path.join(LOG, 'downloads', "{dataset}.slurm.log")
+            output=lambda wildcards: os.path.join(LOG, 'downloads', f"{wildcards.dataset}.slurm.log")
         )
     script:
         "workflow/scripts/download_dataset.py"
@@ -305,38 +323,47 @@ rule prepare_dataset:
         zero_pad = config['zero_padding'],
         kwargs = config,
     resources:
-        time = config['resources']['jobs']['prepare_dataset']['time'],
-        mem = lambda wc: estimate_resources(
-            os.path.join(PROCESS_DIR, f"{wc.dataset}.h5ad"),
-            resource_config=config["resources"],
-            factor=4,
-            job_name='prepare_dataset'
-        )['mem'],
-        partition = lambda wc: estimate_resources(
-            os.path.join(PROCESS_DIR, f"{wc.dataset}.h5ad"),
-            resource_config=config["resources"],
-            factor=4,
-            job_name='prepare_dataset'
-        )['partition'],
+        **get_job_resources(config['resources'], job_name='prepare_dataset'),
         output = lambda wildcards: os.path.join(LOG, 'prepare', f"{wildcards.dataset}.slurm.log")
     script:
         "workflow/scripts/prepare_dataset.py"
 
 
 # 6. Merge datasets into meta-set
-rule merge_datasets:
-    input:
-        dataset_files = expand(os.path.join(PREPARE_DIR, "{dataset}.h5ad"), dataset=DATASET_NAMES)
-    output:
-        merged_set = MERGED_OUTPUT_FILE
-    log:
-        os.path.join(LOG, "merge.log")
-    params:
-        merge_method = config['merge_method']
-    resources:
-        **get_job_resources(config['resources'], job_name='merge_datasets', output=os.path.join(LOG, 'merge.slurm.log'))
-    script:
-        "workflow/scripts/merge.py"
+if MERGE_AND_SPLIT:
+    # Combined merge + ctrl/pert split in a single streaming pass
+    rule merge_datasets:
+        input:
+            dataset_files = expand(os.path.join(PREPARE_DIR, "{dataset}.h5ad"), dataset=DATASET_NAMES)
+        output:
+            pert_path = ENDPOINT,
+            ctrl_path = CTRL_PATH
+        log:
+            os.path.join(LOG, "merge.log")
+        params:
+            merge_method = config['merge_method'],
+            ctrl_pth = CTRL_PATH,
+            pert_pth = ENDPOINT,
+            perturbation_col = config['perturbation_col'],
+            ctrl_key = config['ctrl_key'],
+        resources:
+            **get_job_resources(config['resources'], job_name='merge_datasets', output=os.path.join(LOG, 'merge.slurm.log'))
+        script:
+            "workflow/scripts/merge.py"
+else:
+    rule merge_datasets:
+        input:
+            dataset_files = expand(os.path.join(PREPARE_DIR, "{dataset}.h5ad"), dataset=DATASET_NAMES)
+        output:
+            merged_set = MERGED_OUTPUT_FILE
+        log:
+            os.path.join(LOG, "merge.log")
+        params:
+            merge_method = config['merge_method']
+        resources:
+            **get_job_resources(config['resources'], job_name='merge_datasets', output=os.path.join(LOG, 'merge.slurm.log'))
+        script:
+            "workflow/scripts/merge.py"
 
 
 # 7. Harmonize merged set (optional)
@@ -376,3 +403,41 @@ if OUTPUT_FILE_W_EMB is not None:
             **get_job_resources(config['resources'], job_name='add_gene_embedding', output=os.path.join(LOG, 'add_emb.slurm.log'))
         script:
             "workflow/scripts/add_gene_embedding.py"
+
+# 9. Split database into control and perturbed cells (only when merge didn't already split)
+if config['split_ctrl'] and not MERGE_AND_SPLIT:
+    rule split_ctrl:
+        input:
+            input_file = SPLIT_INPUT
+        output:
+            pert_path = ENDPOINT,
+            ctrl_path = CTRL_PATH
+        log:
+            os.path.join(LOG, "split_ctrl.log")
+        resources:
+            **get_job_resources(config['resources'], job_name='split_ctrl', output=os.path.join(LOG, 'split_ctrl.slurm.log'))
+        script:
+            "workflow/scripts/split_ctrl.py"
+
+
+# 10. Generate nested benchmark subsets and OOD splits (one job per size)
+if BENCHMARK_SIZES:
+    rule gen_benchmark_split:
+        input:
+            adata = BENCHMARK_INPUT
+        output:
+            subset = os.path.join(BENCHMARK_DIR, "{size}", "source.h5ad"),
+            metadata = os.path.join(BENCHMARK_DIR, "{size}", "metadata.json"),
+        log:
+            os.path.join(LOG, "benchmark", "{size}.log")
+        params:
+            all_sizes = BENCHMARK_SIZES,
+            split_dir = lambda wildcards: os.path.join(BENCHMARK_DIR, str(wildcards.size)),
+            context_groups = config.get('benchmark_context_groups', 'auto'),
+            n_folds = config.get('benchmark_n_folds', 6),
+            seed = config['seed'],
+        resources:
+            **get_job_resources(config['resources'], job_name='gen_benchmark_split',
+                                output=lambda wildcards: os.path.join(LOG, 'benchmark', f"{wildcards.size}.slurm.log"))
+        script:
+            "workflow/scripts/gen_benchmark_split.py"

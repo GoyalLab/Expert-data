@@ -1,6 +1,8 @@
 import requests
 import scanpy as sc
 from tqdm import tqdm
+import subprocess
+import shutil
 import logging
 import pandas as pd
 import numpy as np
@@ -39,15 +41,194 @@ def log_decorator(func):
     return wrapper
 
 
-def stream_subset_csr_backed(
+def find_local_ssd_scratch() -> str | None:
+    """Find a local SSD scratch directory on the node.
+
+    Looks for non-rotational (SSD/NVMe) block devices with local mount points
+    that have usable scratch space. Returns the best candidate path or None.
+    """
+    try:
+        # Get non-rotational block devices and their mount points
+        result = subprocess.run(
+            ['lsblk', '-ndo', 'NAME,ROTA'],
+            capture_output=True, text=True, timeout=5,
+        )
+        if result.returncode != 0:
+            return None
+
+        ssd_devices = set()
+        for line in result.stdout.strip().split('\n'):
+            parts = line.split()
+            if len(parts) == 2 and parts[1] == '0':
+                ssd_devices.add(parts[0])
+
+        if not ssd_devices:
+            return None
+
+        # Get mount points for all partitions of SSD devices
+        result = subprocess.run(
+            ['lsblk', '-nro', 'NAME,MOUNTPOINT'],
+            capture_output=True, text=True, timeout=5,
+        )
+        if result.returncode != 0:
+            return None
+
+        ssd_mounts = []
+        for line in result.stdout.strip().split('\n'):
+            parts = line.split(None, 1)
+            if len(parts) == 2 and parts[1]:
+                dev_name = parts[0]
+                mountpoint = parts[1]
+                # Check if this partition belongs to an SSD device
+                if any(dev_name.startswith(ssd) for ssd in ssd_devices):
+                    # Skip boot/efi/swap partitions and network mounts
+                    if mountpoint in ('/boot', '/boot/efi') or mountpoint.startswith('/gpfs'):
+                        continue
+                    ssd_mounts.append(mountpoint)
+
+        if not ssd_mounts:
+            return None
+
+        # Prefer /tmp if it's on an SSD, otherwise use the root mount
+        for candidate in ['/tmp'] + ssd_mounts:
+            if candidate in ssd_mounts or (candidate == '/tmp' and '/' in ssd_mounts):
+                if os.path.isdir(candidate) and os.access(candidate, os.W_OK):
+                    return candidate
+
+        # Fall back to first writable SSD mount
+        for mount in ssd_mounts:
+            if os.path.isdir(mount) and os.access(mount, os.W_OK):
+                return mount
+
+    except Exception as e:
+        logging.debug(f"Failed to detect local SSD scratch: {e}")
+
+    return None
+
+
+def is_on_gpfs(path: str) -> bool:
+    """Check if a path resides on a GPFS filesystem."""
+    path = os.path.realpath(path)
+    if path.startswith('/gpfs'):
+        return True
+    try:
+        result = subprocess.run(
+            ['df', '--output=fstype', path],
+            capture_output=True, text=True, timeout=5,
+        )
+        if result.returncode == 0:
+            lines = result.stdout.strip().split('\n')
+            if len(lines) >= 2 and 'gpfs' in lines[-1].lower():
+                return True
+    except Exception:
+        pass
+    return False
+
+
+def try_migrate_cache_to_ssd(
+    cache_path: str,
+    strict: bool = True,
+    min_free_pct: float = 0.3,
+) -> str:
+    """If cache is on GPFS and a local SSD has space, copy it there.
+
+    Parameters
+    ----------
+    cache_path
+        Path to the dense cache file.
+    strict
+        If True, raise on migration failure instead of falling back to GPFS.
+    min_free_pct
+        Minimum fraction of disk space that must remain free after migration.
+
+    Returns the (possibly new) cache path to use.
+    """
+    if not os.path.exists(cache_path):
+        msg = f"Cache file not found: {cache_path}"
+        if strict:
+            raise FileNotFoundError(msg)
+        logging.warning(msg)
+        return cache_path
+
+    if not is_on_gpfs(cache_path):
+        logging.debug("Cache not on GPFS, skipping SSD migration")
+        return cache_path
+
+    ssd_scratch = find_local_ssd_scratch()
+    if ssd_scratch is None:
+        msg = "No local SSD scratch found, cannot migrate cache from GPFS"
+        if strict:
+            raise OSError(msg)
+        logging.warning(msg)
+        return cache_path
+
+    # Calculate cache size (npy + meta)
+    meta_path = cache_path + '.meta.json'
+    cache_size = os.path.getsize(cache_path)
+    if os.path.exists(meta_path):
+        cache_size += os.path.getsize(meta_path)
+
+    # Check available space on SSD
+    disk_usage = shutil.disk_usage(ssd_scratch)
+    if cache_size > disk_usage.free * (1 - min_free_pct):
+        msg = (
+            f"Not enough SSD space for cache migration: "
+            f"cache={cache_size / 1e9:.1f}GB, "
+            f"available={disk_usage.free / 1e9:.1f}GB on {ssd_scratch}"
+        )
+        if strict:
+            raise OSError(msg)
+        return cache_path
+
+    # Build SSD cache path: <ssd_scratch>/cache_<user>/<basename>
+    user = os.environ.get('USER', 'unknown')
+    ssd_cache_dir = os.path.join(ssd_scratch, f'cache_{user}')
+    os.makedirs(ssd_cache_dir, exist_ok=True)
+    ssd_cache_path = os.path.join(ssd_cache_dir, os.path.basename(cache_path))
+    ssd_meta_path = ssd_cache_path + '.meta.json'
+
+    # Skip copy if already migrated (same size = already copied)
+    if (
+        os.path.exists(ssd_cache_path)
+        and os.path.exists(ssd_meta_path)
+        and os.path.getsize(ssd_cache_path) == os.path.getsize(cache_path)
+    ):
+        logging.info(f"SSD cache already exists at {ssd_cache_path}")
+        return ssd_cache_path
+
+    logging.info(
+        f"Migrating file to local SSD: "
+        f"{cache_path} -> {ssd_cache_path} ({cache_size / 1e9:.1f}GB)"
+    )
+    try:
+        shutil.copy2(cache_path, ssd_cache_path)
+        if os.path.exists(meta_path):
+            shutil.copy2(meta_path, ssd_meta_path)
+        logging.info(f"Cache migrated to SSD at {ssd_cache_path}")
+        return ssd_cache_path
+    except Exception as e:
+        # Clean up partial copy
+        for p in (ssd_cache_path, ssd_meta_path):
+            if os.path.exists(p):
+                try:
+                    os.remove(p)
+                except OSError:
+                    pass
+        if strict:
+            raise OSError(f"Failed to migrate cache to SSD: {e}") from e
+        logging.warning(f"Failed to migrate cache to SSD: {e}, using GPFS cache")
+        return cache_path
+
+def _stream_subset_csr_backed_impl(
     adata: ad.AnnData,
-    mask_or_idx: np.ndarray | None = None,
-    out_path: str | None = None,
-    chunk_size: int = 50_000,
-    sort_indices: bool = True,
-    verbose: bool = True,
-    compression: str | None = None,
-    dtype: np.dtype = np.int16,
+    src_path,
+    mask_or_idx: np.ndarray | None,
+    out_path: str | None,
+    chunk_size: int,
+    sort_indices: bool,
+    verbose: bool,
+    compression: str | None,
+    dtype: np.dtype,
 ):
     import numpy as np
     import h5py
@@ -81,7 +262,7 @@ def stream_subset_csr_backed(
         out_path = str(adata.filename).replace(".h5ad", "_subset.h5ad")
 
     # --- write file with direct h5py reads ---
-    with h5py.File(adata.filename, "r") as f_in, h5py.File(out_path, "w") as f:
+    with h5py.File(src_path, "r") as f_in, h5py.File(out_path, "w") as f:
         X_attrs = dict(f_in["X"].attrs)
         src_indptr = f_in["X/indptr"][:]
         src_data = f_in["X/data"]
@@ -206,6 +387,243 @@ def stream_subset_csr_backed(
 
     return out_path
 
+
+def _stream_split_csr_backed_impl(
+    adata: ad.AnnData,
+    src_path,
+    mask: np.ndarray,
+    out_path_true: str,
+    out_path_false: str,
+    chunk_size: int,
+    verbose: bool,
+    compression: str | None,
+    dtype: np.dtype,
+):
+    """Single-pass split of a backed AnnData into two files based on a boolean mask.
+
+    Rows where mask is True go to out_path_true, rows where mask is False go to
+    out_path_false. Reads each chunk of X only once.
+    """
+    import numpy as np
+    import h5py
+    import logging
+    from tqdm import tqdm
+    from anndata.experimental import write_elem
+    assert adata.isbacked, "AnnData must be in backed mode"
+
+    mask = np.asarray(mask, dtype=bool)
+    assert mask.shape[0] == adata.shape[0], "Mask length must match number of obs"
+
+    n_obs = adata.shape[0]
+    n_vars = adata.shape[1]
+    all_idx = np.arange(n_obs)
+
+    idx_true = np.where(mask)[0]
+    idx_false = np.where(~mask)[0]
+
+    with h5py.File(src_path, "r") as f_in:
+        X_attrs = dict(f_in["X"].attrs)
+        src_indptr = f_in["X/indptr"][:]
+        src_data = f_in["X/data"]
+        src_indices = f_in["X/indices"]
+
+        # Compute nnz for each split from indptr (no data read)
+        row_lengths = src_indptr[1:] - src_indptr[:-1]
+        nnz_true = int(np.sum(row_lengths[mask]))
+        nnz_false = int(np.sum(row_lengths[~mask]))
+
+        if verbose:
+            logging.info(
+                f"[INFO] Splitting {n_obs} cells: "
+                f"{len(idx_true)} -> {out_path_true}, "
+                f"{len(idx_false)} -> {out_path_false}"
+            )
+            logging.info(f"[INFO] nnz true: {nnz_true:,}, nnz false: {nnz_false:,}")
+
+        with h5py.File(out_path_true, "w") as f_t, \
+             h5py.File(out_path_false, "w") as f_f:
+
+            # Pre-allocate X datasets for both outputs
+            writers = {}
+            for label, f_out, n_out, nnz in [
+                ("true", f_t, len(idx_true), nnz_true),
+                ("false", f_f, len(idx_false), nnz_false),
+            ]:
+                xg = f_out.create_group("X")
+                writers[label] = {
+                    "file": f_out,
+                    "X_group": xg,
+                    "data_ds": xg.create_dataset(
+                        "data", shape=(nnz,), dtype=dtype,
+                        compression=compression, chunks=True,
+                    ),
+                    "indices_ds": xg.create_dataset(
+                        "indices", shape=(nnz,), dtype=np.int32,
+                        compression=compression, chunks=True,
+                    ),
+                    "indptr": np.zeros(n_out + 1, dtype=np.int64),
+                    "n_obs": n_out,
+                    "write_ptr": 0,
+                    "out_row": 0,
+                }
+
+            # Single pass over all rows in order
+            loop = range(0, n_obs, chunk_size)
+            if verbose:
+                loop = tqdm(loop, desc="Splitting")
+            for i in loop:
+                batch = all_idx[i:i + chunk_size]
+
+                # Read the chunk data once
+                span_start = int(src_indptr[batch[0]])
+                span_end = int(src_indptr[batch[-1] + 1])
+                if span_end > span_start:
+                    chunk_data = src_data[span_start:span_end]
+                    chunk_indices = src_indices[span_start:span_end]
+                else:
+                    chunk_data = np.array([], dtype=dtype)
+                    chunk_indices = np.array([], dtype=np.int32)
+
+                batch_starts = src_indptr[batch] - span_start
+                batch_ends = src_indptr[batch + 1] - span_start
+                batch_mask = mask[batch]
+
+                # Dispatch rows to each writer
+                for sel, label in [(batch_mask, "true"), (~batch_mask, "false")]:
+                    if not np.any(sel):
+                        continue
+                    w = writers[label]
+                    sel_starts = batch_starts[sel]
+                    sel_ends = batch_ends[sel]
+                    sel_lengths = (sel_ends - sel_starts).astype(np.int64)
+
+                    # Gather row data
+                    parts = []
+                    idx_parts = []
+                    for s, e in zip(sel_starts, sel_ends):
+                        s, e = int(s), int(e)
+                        if e > s:
+                            parts.append(chunk_data[s:e])
+                            idx_parts.append(chunk_indices[s:e])
+
+                    if parts:
+                        cat_data = np.concatenate(parts)
+                        cat_indices = np.concatenate(idx_parts)
+                    else:
+                        cat_data = np.array([], dtype=dtype)
+                        cat_indices = np.array([], dtype=np.int32)
+
+                    new_ptr = w["write_ptr"] + len(cat_data)
+                    w["data_ds"][w["write_ptr"]:new_ptr] = cat_data
+                    w["indices_ds"][w["write_ptr"]:new_ptr] = cat_indices
+                    w["write_ptr"] = new_ptr
+
+                    # Update indptr
+                    r = w["out_row"]
+                    w["indptr"][r + 1 : r + 1 + len(sel_lengths)] = (
+                        w["indptr"][r] + np.cumsum(sel_lengths)
+                    )
+                    w["out_row"] += len(sel_lengths)
+
+            # Finalize both files
+            for label, idx, f_out in [
+                ("true", idx_true, f_t),
+                ("false", idx_false, f_f),
+            ]:
+                w = writers[label]
+                w["X_group"].create_dataset(
+                    "indptr", data=w["indptr"], compression=compression,
+                )
+                w["X_group"].attrs.update(X_attrs)
+                w["X_group"].attrs["shape"] = (w["n_obs"], n_vars)
+
+                obs = adata.obs.iloc[idx].copy()
+                for col in obs.select_dtypes(include="category").columns:
+                    obs[col] = obs[col].cat.remove_unused_categories()
+                write_elem(f_out, "obs", obs)
+                write_elem(f_out, "var", adata.var)
+
+                if len(adata.obsm) > 0:
+                    obsm = {}
+                    for k, v in adata.obsm.items():
+                        try:
+                            obsm[k] = v[idx]
+                        except Exception as e:
+                            logging.info(f"[WARN] Skipping obsm['{k}']: {e}")
+                    write_elem(f_out, "obsm", obsm)
+
+                if len(adata.varm) > 0:
+                    write_elem(f_out, "varm", dict(adata.varm))
+
+                if len(adata.uns) > 0:
+                    uns_group = f_out.create_group("uns")
+                    for k, v in dict(adata.uns).items():
+                        try:
+                            write_elem(uns_group, k, v)
+                        except Exception as e:
+                            logging.info(f"[WARN] Skipping uns['{k}']: {e}")
+
+    if verbose:
+        logging.info("[DONE] Split complete")
+
+    return out_path_true, out_path_false
+
+
+def stream_subset_csr_backed(
+    adata: ad.AnnData,
+    mask_or_idx: np.ndarray | None = None,
+    out_path: str | None = None,
+    out_path_complement: str | None = None,
+    chunk_size: int = 100_000,
+    sort_indices: bool = True,
+    verbose: bool = True,
+    compression: str | None = None,
+    dtype: np.dtype = np.int16,
+    use_ssd: bool = False,
+):
+    """Stream-subset a backed AnnData to one or two output files.
+
+    If out_path_complement is given and mask_or_idx is a boolean mask,
+    performs a single-pass split: True rows -> out_path, False rows ->
+    out_path_complement. Otherwise falls back to the original single-subset
+    logic.
+    """
+    import logging
+    from pathlib import Path
+
+    ssd_copy = None
+    src_path = str(adata.filename)
+
+    # Try to copy the file to local SSD for faster slicing
+    if use_ssd:
+        migrated = try_migrate_cache_to_ssd(src_path, strict=False)
+        if migrated != src_path:
+            ssd_copy = Path(migrated)
+            src_path = ssd_copy
+
+    try:
+        # Single-pass split when complement path is provided
+        if out_path_complement is not None:
+            mask_or_idx = np.asarray(mask_or_idx)
+            if mask_or_idx.dtype != bool:
+                raise ValueError(
+                    "out_path_complement requires a boolean mask, not indices"
+                )
+            return _stream_split_csr_backed_impl(
+                adata, src_path, mask_or_idx, out_path, out_path_complement,
+                chunk_size, verbose, compression, dtype,
+            )
+        # Original single-subset path
+        return _stream_subset_csr_backed_impl(
+            adata, src_path, mask_or_idx, out_path,
+            chunk_size, sort_indices, verbose, compression, dtype,
+        )
+    # Clean up tmp if needed
+    finally:
+        if ssd_copy is not None and ssd_copy.exists():
+            ssd_copy.unlink()
+            logging.info(f"[INFO] Cleaned up SSD cache: {ssd_copy}")
+
 def convert_size(size_bytes: int) -> str:
     if size_bytes == -1:
         return "Unknown size"
@@ -247,7 +665,7 @@ def download_file(url, output_path, cache=True) -> str:
 
             # Write the file to the output path in chunks
             with open(output_path, 'wb') as file:
-                for chunk in response.iter_content(chunk_size=8192):
+                for chunk in response.iter_content(chunk_size=8 * 1024 * 1024):
                     if chunk:
                         file.write(chunk)
                         progress_bar.update(len(chunk))  # Update the progress bar

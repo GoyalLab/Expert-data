@@ -311,50 +311,6 @@ def _plt_meta_features(obs: pd.DataFrame, vars: dict[str, pd.DataFrame], plt_dir
     logging.info('Plotting intersection between perturbations in datasets.')
     _plt_upset(obs, plt_dir=plt_dir)
 
-def _calc_pool_datasets(
-        meta: pd.DataFrame, 
-        min_set_size: int = 1000, 
-        min_size: int = 2,
-        normalize: bool = False,
-        key: str = OBS_KEYS.CONTEXT_KEY,
-    ) -> list[str]:
-    from itertools import combinations
-
-    # Define all sets of unique perturbation labels
-    sets = meta.groupby(key, observed=True)[OBS_KEYS.PERTURBATION_KEY].apply(lambda x: set(x.unique()))
-    all_sets = list(sets.keys())
-    # Calculate perturbation label intersection between all combinations of datasets
-    combos, set_sizes, n_sets, intersections = [], [], [], []
-    for r in range(min_size, len(all_sets) + 1):
-        for combo in combinations(all_sets, r):
-            inter = set.intersection(*(sets[name] for name in combo))
-            n = len(inter)
-            # Only keep sets that have a minimal size
-            if n < min_set_size:
-                continue
-            intersections.append(inter)
-            combos.append(combo)
-            n_sets.append(len(combo))
-            set_sizes.append(n)
-    intersections = np.array(intersections, dtype=object)
-    combos = np.array(combos, dtype=object)
-    set_sizes = np.array(set_sizes)
-    n_sets = np.array(n_sets)
-    # Choose best combination by normalized harmonic mean of number of datasets and number of perturbations
-    if normalize:
-        n_sets = n_sets / n_sets.max()
-        set_sizes = set_sizes / set_sizes.max()
-    hm = 2 * n_sets * set_sizes / (n_sets + set_sizes)
-    # Choose best pool values
-    best_idx = np.argmax(hm)
-    chosen_ss, chosen_n = set_sizes[best_idx], n_sets[best_idx]
-    pool_contexts = combos[best_idx]
-    perturbation_pool = intersections[best_idx]
-    logging.info(f'Found optimal perturbation pool between {chosen_n} contexts with {chosen_ss} shared perturbations.')
-    logging.info(f'Chosen contexts: {list(pool_contexts)}')
-    logging.info(f'Pool dim: {len(perturbation_pool)} gene-perturbations')
-    return sorted(list(perturbation_pool))
-
 def _calc_feature_pool(vars: dict[str, pd.DataFrame]) -> None:
     """Calculate overlap between indices of all datasets."""
     feature_pool = set.intersection(*[set(v.index) for v in vars.values()])
@@ -386,7 +342,7 @@ def create_meta_summary(
     # Add dataset meta information to observations
     obs = obs.merge(dataset_sheet, left_on=OBS_KEYS.DATASET_KEY, right_index=True, how='left')
     # Subset by available classes in embedding if given
-    if gene_embedding_file is not None:
+    if gene_embedding_file is not None and os.path.exists(gene_embedding_file):
         all_perturbations = obs[OBS_KEYS.PERTURBATION_KEY].unique()
         perturbations = _get_emb_intersection(all_perturbations, gene_embedding_file)
         # Subset .obs to valid perturbations only
