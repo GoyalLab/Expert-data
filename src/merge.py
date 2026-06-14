@@ -299,19 +299,20 @@ def merge(input_pths, out_pth: str | None = None,
           method: str = 'concat_on_disk',
           ctrl_pth: str | None = None, pert_pth: str | None = None,
           perturbation_col: str = 'perturbation',
-          ctrl_key: str = OBS_KEYS.CTRL_KEY):
+          ctrl_key: str = OBS_KEYS.CTRL_KEY,
+          compression: str | None = 'gzip'):
     split = ctrl_pth is not None and pert_pth is not None
     if not split and out_pth is None:
         raise ValueError('out_pth required when not splitting')
     logging.info(f'Merging {len(input_pths)} files using {method}')
     if method == 'in_memory':
         ds_list = [ad.read_h5ad(f) for f in input_pths]
-        ad.concat(ds_list).write_h5ad(out_pth, compression='gzip')
+        ad.concat(ds_list).write_h5ad(out_pth, compression=compression)
     elif method == 'concat_on_disk':
         _stream_merge_csr(input_pths, out_pth, ctrl_pth=ctrl_pth,
                           pert_pth=pert_pth,
                           perturbation_col=perturbation_col,
-                          ctrl_key=ctrl_key)
+                          ctrl_key=ctrl_key, compression=compression)
     else:
         raise ValueError(f'Unknown merge method: {method}')
     logging.info(f'Merge complete')

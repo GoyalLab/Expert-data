@@ -229,6 +229,7 @@ def _stream_subset_csr_backed_impl(
     verbose: bool,
     compression: str | None,
     dtype: np.dtype,
+    span_budget: int = 100_000_000,
 ):
     import numpy as np
     import h5py
@@ -295,49 +296,62 @@ def _stream_subset_csr_backed_impl(
         )
 
         indptr_out = np.zeros(n_obs_out + 1, dtype=np.int64)
-        out_row = 0
         write_ptr = 0
 
-        loop = range(0, n_obs_out, chunk_size)
-        if verbose:
-            loop = tqdm(loop)
-        for i in loop:
-            batch = idx[i:i + chunk_size]
-            batch_starts = src_indptr[batch]
-            batch_ends = src_indptr[batch + 1]
-            batch_lengths = batch_ends - batch_starts
+        # Read the source in large *sequential* super-spans instead of per row.
+        # Benchmark subsets select rows scattered across the whole matrix, so the
+        # previous "contiguous group" path degenerated to ~chunk_size tiny h5py
+        # reads per batch — catastrophic on a gzip-compressed source, since each
+        # read forces a full HDF5-chunk decompress (observed ~40 min/chunk). Here
+        # we grow each batch until the covered element span reaches `span_budget`,
+        # read that whole span in one shot (each gzip chunk decompressed once),
+        # then gather the selected rows in memory.
+        row_starts = src_indptr[idx]
+        row_ends = src_indptr[idx + 1]
+        # span_budget caps the per-read element span: ~6 bytes/element (int16
+        # data + int32 indices), so ~100M elems -> ~0.6 GB read buffer, a few GB
+        # peak with the gathered copies. Lower it to cut peak memory. Independent
+        # of how scattered the selection is.
 
-            # --- read data/indices via contiguous groups for efficiency ---
-            data_parts = []
-            indices_parts = []
-            if len(batch) > 1:
-                breaks = np.where(np.diff(batch) != 1)[0] + 1
-            else:
-                breaks = np.array([], dtype=int)
-            group_starts = np.concatenate([[0], breaks])
-            group_ends = np.concatenate([breaks, [len(batch)]])
+        i = 0
+        pbar = tqdm(total=n_obs_out) if verbose else None
+        while i < n_obs_out:
+            span_start = int(row_starts[i])
+            # grow the batch while the covered span stays within the read budget
+            # (always take at least one row; a single row's nnz << span_budget)
+            j = i + 1
+            while j < n_obs_out and (int(row_ends[j]) - span_start) <= span_budget:
+                j += 1
+            batch_starts = row_starts[i:j]
+            batch_ends = row_ends[i:j]
+            batch_lengths = (batch_ends - batch_starts).astype(np.int64)
+            span_end = int(batch_ends[-1])
 
-            for gs, ge in zip(group_starts, group_ends):
-                span_start = int(batch_starts[gs])
-                span_end = int(batch_ends[ge - 1])
-                if span_end > span_start:
-                    data_parts.append(src_data[span_start:span_end])
-                    indices_parts.append(src_indices[span_start:span_end])
+            # one bulk sequential read of the whole covered span
+            span_data = src_data[span_start:span_end]
+            span_indices = src_indices[span_start:span_end]
 
-            chunk_data = np.concatenate(data_parts) if data_parts else np.array([], dtype=dtype)
-            chunk_indices = np.concatenate(indices_parts) if indices_parts else np.array([], dtype=np.int32)
+            # vectorized ragged gather of just the selected rows within the span
+            total = int(batch_lengths.sum())
+            out_starts = np.zeros(len(batch_lengths), dtype=np.int64)
+            np.cumsum(batch_lengths[:-1], out=out_starts[1:])
+            local_starts = (batch_starts - span_start)  # row offsets within span
+            shift = np.repeat(local_starts - out_starts, batch_lengths)
+            sel = np.arange(total, dtype=np.int64) + shift
 
-            # --- write into pre-allocated datasets ---
-            new_ptr = write_ptr + len(chunk_data)
-            data_ds[write_ptr:new_ptr] = chunk_data
-            indices_ds[write_ptr:new_ptr] = chunk_indices
+            new_ptr = write_ptr + total
+            data_ds[write_ptr:new_ptr] = span_data[sel]
+            indices_ds[write_ptr:new_ptr] = span_indices[sel]
             write_ptr = new_ptr
 
-            # --- vectorized indptr update ---
-            indptr_out[out_row + 1 : out_row + 1 + len(batch_lengths)] = (
-                indptr_out[out_row] + np.cumsum(batch_lengths)
-            )
-            out_row += len(batch_lengths)
+            # --- vectorized indptr update for rows i..j-1 ---
+            indptr_out[i + 1 : j + 1] = indptr_out[i] + np.cumsum(batch_lengths)
+
+            if pbar is not None:
+                pbar.update(j - i)
+            i = j
+        if pbar is not None:
+            pbar.close()
 
         # --- write indptr ---
         X_group.create_dataset("indptr", data=indptr_out, compression=compression)
@@ -580,6 +594,7 @@ def stream_subset_csr_backed(
     compression: str | None = None,
     dtype: np.dtype = np.int16,
     use_ssd: bool = False,
+    span_budget: int = 100_000_000,
 ):
     """Stream-subset a backed AnnData to one or two output files.
 
@@ -617,6 +632,7 @@ def stream_subset_csr_backed(
         return _stream_subset_csr_backed_impl(
             adata, src_path, mask_or_idx, out_path,
             chunk_size, sort_indices, verbose, compression, dtype,
+            span_budget=span_budget,
         )
     # Clean up tmp if needed
     finally:

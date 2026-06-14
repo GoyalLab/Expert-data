@@ -477,6 +477,7 @@ def read_subset(
     qc: bool = False,
     cancer: bool = False,
     seed: int = 42,
+    source_p_col: str | None = None,
 ) -> ad.AnnData:
     """
     Load a minimal subset of an h5ad into memory using a single backed read.
@@ -495,8 +496,20 @@ def read_subset(
         logging.info(f'Dataset shape: {adata.shape} (cells x genes)')
 
         # --- Identify perturbation column ---
-        p_idx = _find_match_idx(adata.obs.columns, P_COLS)
-        p_key = adata.obs.columns[p_idx]
+        # A per-dataset override (source_p_col) takes precedence over P_COLS
+        # auto-detection — needed when a dataset's default `perturbation` column
+        # does not encode the genetic perturbation (e.g. Wong2026, where it marks
+        # the untreated arm and `gene_target` holds the real CRISPRi target).
+        if source_p_col is not None and source_p_col in adata.obs.columns:
+            p_key = source_p_col
+            logging.info(f'Using dataset-specified perturbation column "{p_key}".')
+        else:
+            if source_p_col is not None:
+                logging.warning(
+                    f'Override perturbation column "{source_p_col}" not found in '
+                    f'.obs; falling back to auto-detection.')
+            p_idx = _find_match_idx(adata.obs.columns, P_COLS)
+            p_key = adata.obs.columns[p_idx]
 
         # --- Clean labels once (obs only, no X) ---
         labels = clean_perturbation_labels(adata.obs[p_key], keep_versions=keep_versions)
@@ -667,6 +680,7 @@ def preprocess_dataset(
         min_genes: int = 5_000,
         keep_versions: bool = False,
         remove_invalid_labels: bool = True,
+        source_p_col: str | None = None,
         **kwargs
     ) -> ad.AnnData:
     # All cell-level filters (labels, single-pert, QC) and the gene filter are
@@ -688,6 +702,7 @@ def preprocess_dataset(
         keep_versions=keep_versions,
         qc=qc,
         cancer=cancer,
+        source_p_col=source_p_col,
     )
     if hvg:
         # Calculate highly variable genes on raw counts (seurat_v3 requires this).

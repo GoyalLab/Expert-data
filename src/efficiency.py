@@ -361,17 +361,37 @@ def _score_one(
     raw = _scalar_projection(expr_sub, local_pert, local_ctrl)
     mean_nt = raw[local_ctrl].mean()
     std_nt = raw[local_ctrl].std()
-    if std_nt == 0:
-        std_nt = 1.0
+    # Floor the control std relative to the overall projection spread.  A bare
+    # `== 0` check misses the degenerate case where the control projections are
+    # near-constant (std ~ 1e-11) but not exactly zero, which inflates z-scores
+    # by many orders of magnitude (observed up to ~1e11 on a handful of
+    # perturbations).  Flooring relative to the global scale bounds such cases
+    # without altering well-behaved perturbations (whose std_nt >> std_floor).
+    std_floor = 1e-3 * float(np.std(raw))
+    if not np.isfinite(std_nt) or std_nt < std_floor:
+        std_nt = std_floor if std_floor > 0 else 1.0
     z_scores = (raw[local_pert] - mean_nt) / std_nt
 
     return (pert, pert_idx, z_scores, loo_df, final_de_names)
 
 
 def _scale_scores(scores: np.ndarray, q: float = 0.99):
-    """Scale efficiency scores within this dataset to smooth extreme outliers."""
+    """Scale efficiency scores within this dataset to smooth extreme outliers.
+
+    Uses the ``q``-th percentile (not the max) as the tanh saturation scale.
+    With ``M = max``, ``M * tanh(s / M) ~= s`` for every non-maximal score, so a
+    single extreme value flattens the transform into the identity and passes
+    straight through — defeating the smoothing exactly when it's needed.  Using
+    a robust ``M`` (the 99th percentile) means values near ``M`` map ~linearly
+    while values ``>> M`` saturate toward ``M``.  Mirrors ``scale_scores`` in
+    ``src/preprocess.py``.
+    """
     scores = np.abs(scores)
-    M = scores.max()
+    M = float(np.quantile(scores, q))
+    if not np.isfinite(M) or M <= 0:
+        M = float(scores.max())
+        if M <= 0:
+            return scores
     return M * np.tanh(scores / M)
 
 
@@ -402,6 +422,7 @@ def compute_perturbation_scores(
     scale_scores: bool = True,
     inplace: bool = False,
     copy: bool = False,
+    return_degs: bool = False,
     verbose: bool = True,
 ) -> np.ndarray:
     """
@@ -465,6 +486,11 @@ def compute_perturbation_scores(
     inplace
         If True, write results into `adata` and return None.
         If False, return a DataFrame with efficiency scores indexed by cell barcode.
+    return_degs
+        If True (and not inplace), return a ``(scores, deg_dict)`` tuple where
+        ``deg_dict`` maps each scored perturbation to its DE gene list (the
+        wmvReg-corrected set when ``loo=True``).  Default False preserves the
+        plain-series return for existing callers.
     verbose
         If True, show a tqdm progress bar.
     """
@@ -574,5 +600,9 @@ def compute_perturbation_scores(
     # Scale scores to prevent extreme values if toggled
     if scale_scores:
         scores = _scale_scores(scores)
+    # Optionally also hand back the per-perturbation DE gene sets (already
+    # computed above) so callers can persist / pool them without re-running.
+    if return_degs:
+        return scores, deg_dict
     # Return scores series to preserve barcodes
     return scores

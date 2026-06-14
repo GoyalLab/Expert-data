@@ -236,8 +236,11 @@ def prepare_merge(
             row_mask = filter_mask
             obs = obs[filter_mask]
 
+    # Skip per-dataset gzip when compression is deferred to a final h5repack pass
+    # (these prepared files are intermediates consumed by the merge step).
+    compression = None if kwargs.get('defer_compression', False) else 'gzip'
     _stream_prepare_csr(
         input_pth, out, pool_genes, obs, var_names,
-        row_mask=row_mask, zero_pad=zero_pad,
+        row_mask=row_mask, zero_pad=zero_pad, compression=compression,
     )
     return obs

@@ -14,6 +14,9 @@ class _DATA_SHEET_NT(NamedTuple):
     MEM: str = 'memory'
     MAX_MEM: str = 'max_memory'
     PARTITION: str = 'partition'
+    # Optional per-dataset override: which .obs column to use as the source
+    # perturbation label (falls back to P_COLS auto-detection when blank).
+    PERTURBATION_COL: str = 'perturbation_col'
 
 class _OBS_KEYS_NT(NamedTuple):
     DATASET_KEY: str = 'dataset'
@@ -47,7 +50,15 @@ def _ctrl_keys():
         'control',
         'non-targeting',
         'nt',
-        'ntc'
+        'ntc',
+        # Non-targeting / safe-harbor guide nomenclature (e.g. Wong2026 when its
+        # genetic perturbation label is taken from `gene_target`).  Matched after
+        # label cleaning, which splits on '_': SAFE_TARGET -> 'safe',
+        # NO-TARGET -> 'no-target'.
+        'safe',
+        'safe-target',
+        'no-target',
+        'non_targeting'
     ]
 
 def _misc_labels_keys():

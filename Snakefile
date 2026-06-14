@@ -5,7 +5,8 @@ from src.workflow_utils import (
     save_config,
     read_data_sheet,
     get_job_resources,
-    estimate_resources
+    estimate_resources,
+    get_perturbation_col_override
 )
 from src.statics import DATA_SHEET_KEYS
 import numpy as np
@@ -74,6 +75,19 @@ else:
     CTRL_PATH = None
 # When no harmonize/embedding sits between merge and split, do both in one pass
 MERGE_AND_SPLIT = config['split_ctrl'] and SPLIT_INPUT == MERGED_OUTPUT_FILE
+# Deferred compression: write prepare/merge intermediates uncompressed and gzip the
+# final split databases with a single h5repack pass.  In the merge+split fast path,
+# merge writes "uncompressed" raw files that the compress_database rule packs into
+# ENDPOINT/CTRL_PATH; in other paths intermediates stay uncompressed and the final
+# step (split_ctrl) compresses inline.
+DEFER_COMPRESSION = bool(config.get('defer_compression', False))
+MERGE_COMPRESSION = None if DEFER_COMPRESSION else 'gzip'
+DEFER_MERGE_SPLIT = DEFER_COMPRESSION and MERGE_AND_SPLIT
+def _uncompressed_name(p):
+    return f"{p.removesuffix('.h5ad')}.uncompressed.h5ad" if p else p
+# Raw (uncompressed) merge+split outputs when deferring; otherwise the final names
+MERGE_PERT_OUT = _uncompressed_name(ENDPOINT) if DEFER_MERGE_SPLIT else ENDPOINT
+MERGE_CTRL_OUT = _uncompressed_name(CTRL_PATH) if DEFER_MERGE_SPLIT else CTRL_PATH
 # Benchmark splits
 BENCHMARK_SIZES = [int(s) for s in config.get('benchmark_sizes', [])]
 BENCHMARK_DIR = os.path.join(OUTPUT_DIR, 'benchmarks', 'splits')
@@ -160,6 +174,7 @@ rule process_dataset:
         single_perturbations_only = config['single_perturbations_only'],
         p_col = config['perturbation_col'],
         ctrl_key = config['ctrl_key'],
+        source_p_col = lambda wildcards: get_perturbation_col_override(DATASET_SHEET, wildcards.dataset),
         seed = config['seed']
     resources:
         time = config['resources']['jobs']['process_dataset']['time'],
@@ -246,7 +261,8 @@ elif config['efficiency_filter']:
         input:
             dataset_file = os.path.join(PROCESS_DIR, "{dataset}.h5ad"),
         output:
-            scores_file = os.path.join(EFF_DIR, "{dataset}.csv")
+            scores_file = os.path.join(EFF_DIR, "{dataset}.csv"),
+            degs_file = os.path.join(EFF_DIR, "{dataset}_degs.json")
         log:
             os.path.join(LOG, 'filter_cells_by_efficiency', "{dataset}.log")
         params:
@@ -336,16 +352,17 @@ if MERGE_AND_SPLIT:
         input:
             dataset_files = expand(os.path.join(PREPARE_DIR, "{dataset}.h5ad"), dataset=DATASET_NAMES)
         output:
-            pert_path = ENDPOINT,
-            ctrl_path = CTRL_PATH
+            pert_path = temp(MERGE_PERT_OUT) if DEFER_MERGE_SPLIT else MERGE_PERT_OUT,
+            ctrl_path = temp(MERGE_CTRL_OUT) if DEFER_MERGE_SPLIT else MERGE_CTRL_OUT
         log:
             os.path.join(LOG, "merge.log")
         params:
             merge_method = config['merge_method'],
-            ctrl_pth = CTRL_PATH,
-            pert_pth = ENDPOINT,
+            ctrl_pth = MERGE_CTRL_OUT,
+            pert_pth = MERGE_PERT_OUT,
             perturbation_col = config['perturbation_col'],
             ctrl_key = config['ctrl_key'],
+            compression = MERGE_COMPRESSION,
         resources:
             **get_job_resources(config['resources'], job_name='merge_datasets', output=os.path.join(LOG, 'merge.slurm.log'))
         script:
@@ -359,11 +376,33 @@ else:
         log:
             os.path.join(LOG, "merge.log")
         params:
-            merge_method = config['merge_method']
+            merge_method = config['merge_method'],
+            compression = MERGE_COMPRESSION,
         resources:
             **get_job_resources(config['resources'], job_name='merge_datasets', output=os.path.join(LOG, 'merge.slurm.log'))
         script:
             "workflow/scripts/merge.py"
+
+
+# 6.1 Compress the uncompressed merge+split outputs in one h5repack pass (deferred mode)
+if DEFER_MERGE_SPLIT:
+    rule compress_database:
+        input:
+            pert_raw = MERGE_PERT_OUT,
+            ctrl_raw = MERGE_CTRL_OUT,
+        output:
+            pert = ENDPOINT,
+            ctrl = CTRL_PATH,
+        log:
+            os.path.join(LOG, "compress.log")
+        resources:
+            time = config['resources']['jobs'].get('compress_database', {}).get('time', '24:00:00'),
+            mem = config['resources']['jobs'].get('compress_database', {}).get('mem', '20GB'),
+            partition = config['resources']['partitions']['default'],
+            output = os.path.join(LOG, 'compress.slurm.log'),
+        shell:
+            "h5repack -f GZIP=4 {input.pert_raw} {output.pert} > {log} 2>&1 && "
+            "h5repack -f GZIP=4 {input.ctrl_raw} {output.ctrl} >> {log} 2>&1"
 
 
 # 7. Harmonize merged set (optional)

@@ -8,6 +8,7 @@ n_ctrl: 10000
 min_cells_per_perturbation: 50                # Filter perturbations for a minimum number of cells WITHIN a dataset
 min_cells_per_class: 10                    # Minimum number of cells per class (perturbation) ACROSS datasets
 merge_method: 'concat_on_disk'
+defer_compression: true                       # Uncompressed prepare/merge intermediates; single h5repack gzip pass on the final split databases
 
 # Slurm config
 resources:

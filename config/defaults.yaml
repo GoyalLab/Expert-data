@@ -36,6 +36,7 @@ zero_padding: true                          # Keep genes that are not overlappin
 correction_method: 'skip'                   # How to harmonize the data over the different experiments, can be one of: 'scANVI', 'scanorama', 'harmonypy', 'skip'
 merge_method: 'concat_on_disk'              # How to merge datasets: 'concat_on_disk' (memory-efficient) or 'in_memory'
 var_merge: 'union'                   # Choose intersection or union of genes for merged dataset
+defer_compression: false                    # Write prepare/merge intermediates uncompressed and gzip the final split databases with a single h5repack pass (faster; larger intermediate disk use, same end size)
 ## Pre-computed embeddings
 gene_embedding: ''                          # Set path to gene embedding to add to meta-set, will be used to describe perturbations
 context_embedding: ''                       # Set path to context embedding TODO: (scTab will be used by default)
@@ -44,7 +45,7 @@ add_emb_for_features: false                 # Whether to add embedding informati
 split_ctrl: true                            # Creates two output .h5ad files for control and perturbed cells
 
 ## Benchmark splits
-benchmark_sizes: [200, 1000, -1]            # List of perturbation subset sizes for nested benchmark splits, e.g. [200, 1000]. Empty = skip.
+benchmark_sizes: [200, -1]            # List of perturbation subset sizes for nested benchmark splits, e.g. [200, 1000]. Empty = skip.
 benchmark_n_folds: 6                        # Number of OOD folds per benchmark split
 benchmark_context_groups: 'auto'            # How to group contexts for OOD folds: 'auto', 'none', or dict
 
@@ -127,4 +128,4 @@ resources:
 
     gen_benchmark_split:
       time: '48:00:00'
-      mem: '20GB'
+      mem: '100GB'

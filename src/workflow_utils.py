@@ -37,7 +37,10 @@ def hash(s: str, d: int = 4):
 
 def get_param_hash(p: dict, dataset_indices: list[str], d: int = 8):
     blacklist = {'log_dir', 'output_dir', 'cache_dir', 'plot_dir', 'resources',
-                  'benchmark_sizes', 'benchmark_n_folds', 'benchmark_context_groups'}
+                  'benchmark_sizes', 'benchmark_n_folds', 'benchmark_context_groups',
+                  # Storage-only knob: changing it must not relocate OUTPUT_DIR or
+                  # invalidate cached results (same end data, different compression).
+                  'defer_compression'}
     ps = p.copy()
     # sort dict
     ps = dict(sorted(p.items()))
@@ -170,6 +173,22 @@ def determine_resources(config: dict, data_sheet: pd.DataFrame):
     if himem_mask.sum() > 0 and himem_alloc == default_partition:
         logging.warning(f'Some datasets allocate more memory than the set max. memory ({max_mem}) and no high-memory partition is given. Defaulting to partition {default_partition} and max. allocation of {highest_mem}GB.')
     data_sheet.loc[himem_mask,DATA_SHEET_KEYS.PARTITION] = himem_alloc
+
+def get_perturbation_col_override(data_sheet: pd.DataFrame, dataset: str) -> str | None:
+    """Return the per-dataset source perturbation-column override, or None.
+
+    Looks up the optional ``perturbation_col`` datasheet column for ``dataset``;
+    returns its value when set (non-empty / non-NaN), otherwise None so callers
+    fall back to P_COLS auto-detection.
+    """
+    col = DATA_SHEET_KEYS.PERTURBATION_COL
+    if col not in data_sheet.columns or dataset not in data_sheet.index:
+        return None
+    val = data_sheet.loc[dataset, col]
+    if pd.isna(val) or str(val).strip() == '':
+        return None
+    return str(val).strip()
+
 
 def read_data_sheet(config: dict):
     d = pd.read_csv(str(config['datasheet']))

@@ -39,6 +39,7 @@ if __name__ == "__main__":
             single_perturbations_only=snakemake.params.single_perturbations_only,
             p_col=snakemake.params.p_col,
             ctrl_key=snakemake.params.ctrl_key,
+            source_p_col=snakemake.params.source_p_col,
             seed=snakemake.params.seed
         )
     except NameError:
