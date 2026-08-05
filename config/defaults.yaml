@@ -102,6 +102,26 @@ resources:
       time: '4:00:00'
       mem: '20GB'
 
+    # Canonical store (Phase 2).  Three streaming passes, O(chunk)+O(n_genes) memory,
+    # so this does NOT scale with dataset size -- unlike process_dataset, which it
+    # replaces and which requested up to 400GB from the hand-written datasheet column.
+    canonicalize:
+      time: '24:00:00'
+      mem: '48GB'
+
+    # Phase 3 efficiency.  E2 reads only the 3000 HVG columns and holds
+    # (batch + n_ctrl) x n_hvg x 4 bytes, so it is small and flat -- unlike the rule it
+    # replaces, whose peak was nnz_full*B + nnz_hvg*B (153 GiB on XAtlas2025_HEK293T).
+    efficiency_fit:
+      time: '8:00:00'
+      mem: '32GB'
+    efficiency_batch:
+      time: '8:00:00'
+      mem: '24GB'
+    efficiency_gather:
+      time: '2:00:00'
+      mem: '16GB'
+
     build_gene_pool:
       time: '4:00:00'
       mem: '20GB'
