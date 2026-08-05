@@ -1,0 +1,63 @@
+{
+  "n_entries": 39108,
+  "n_datasets_scanned": 22,
+  "pairs_per_dataset": {
+    "Mali2026": 37567,
+    "Marson2025_D1_Rest": 18130,
+    "Marson2025_D1_Stim48hr": 18130,
+    "Marson2025_D1_Stim8hr": 18130,
+    "Marson2025_D2_Rest": 18130,
+    "Marson2025_D2_Stim48hr": 18130,
+    "Marson2025_D2_Stim8hr": 18130,
+    "Marson2025_D3_Rest": 18130,
+    "Marson2025_D3_Stim48hr": 18130,
+    "Marson2025_D3_Stim8hr": 18130,
+    "Marson2025_D4_Rest": 18130,
+    "Marson2025_D4_Stim48hr": 18130,
+    "Marson2025_D4_Stim8hr": 18130,
+    "ReplogleWeissman2022_K562_essential": 8563,
+    "ReplogleWeissman2022_K562_gwps": 8248,
+    "ReplogleWeissman2022_rpe1": 8749,
+    "ReplogleWeissman2025_HepG2": 9624,
+    "ReplogleWeissman2025_Jurkat": 8882,
+    "Wong2026": 0,
+    "XAtlas2025_HCT116": 0,
+    "XAtlas2025_HEK293T": 0,
+    "Zhuang2026": 38606
+  },
+  "n_conflicting_names": 8,
+  "conflicts": {
+    "ELFN2": [
+      "ENSG00000166897",
+      "ENSG00000243902"
+    ],
+    "SOD2": [
+      "ENSG00000112096",
+      "ENSG00000291237"
+    ],
+    "PRRC2B": [
+      "ENSG00000130723",
+      "ENSG00000288701"
+    ],
+    "HOMEZ": [
+      "ENSG00000215271",
+      "ENSG00000290292"
+    ],
+    "TRIM16L": [
+      "ENSG00000108448",
+      "ENSG00000291110"
+    ],
+    "F8A1": [
+      "ENSG00000277203",
+      "ENSG00000288722"
+    ],
+    "TBCE": [
+      "ENSG00000284770",
+      "ENSG00000285053"
+    ],
+    "HSPA14": [
+      "ENSG00000187522",
+      "ENSG00000284024"
+    ]
+  }
+}

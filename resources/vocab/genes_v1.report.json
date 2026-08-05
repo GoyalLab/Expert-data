@@ -1,0 +1,208 @@
+{
+  "n_vocab": 38638,
+  "n_preexisting": 0,
+  "n_appended": 38638,
+  "n_mito": 13,
+  "n_datasets": 22,
+  "intersection_all": 6152,
+  "mito_sources": [
+    "Mali2026",
+    "Marson2025_D1_Rest",
+    "Marson2025_D1_Stim48hr",
+    "Marson2025_D1_Stim8hr",
+    "Marson2025_D2_Rest",
+    "Marson2025_D2_Stim48hr",
+    "Marson2025_D2_Stim8hr",
+    "Marson2025_D3_Rest",
+    "Marson2025_D3_Stim48hr",
+    "Marson2025_D3_Stim8hr",
+    "Marson2025_D4_Rest",
+    "Marson2025_D4_Stim48hr",
+    "Marson2025_D4_Stim8hr",
+    "ReplogleWeissman2022_K562_essential",
+    "ReplogleWeissman2022_K562_gwps",
+    "ReplogleWeissman2022_rpe1",
+    "ReplogleWeissman2025_HepG2",
+    "ReplogleWeissman2025_Jurkat",
+    "XAtlas2025_HCT116"
+  ],
+  "per_dataset": {
+    "Mali2026": {
+      "n_var": 37567,
+      "ensembl_provenance": "var[gene_ids]",
+      "n_unresolved": 0,
+      "n_unique_keys": 37567,
+      "n_within_dataset_collisions": 0,
+      "has_mito_source": true
+    },
+    "Marson2025_D1_Rest": {
+      "n_var": 18130,
+      "ensembl_provenance": "index",
+      "n_unresolved": 0,
+      "n_unique_keys": 18130,
+      "n_within_dataset_collisions": 0,
+      "has_mito_source": true
+    },
+    "Marson2025_D1_Stim48hr": {
+      "n_var": 18130,
+      "ensembl_provenance": "index",
+      "n_unresolved": 0,
+      "n_unique_keys": 18130,
+      "n_within_dataset_collisions": 0,
+      "has_mito_source": true
+    },
+    "Marson2025_D1_Stim8hr": {
+      "n_var": 18130,
+      "ensembl_provenance": "index",
+      "n_unresolved": 0,
+      "n_unique_keys": 18130,
+      "n_within_dataset_collisions": 0,
+      "has_mito_source": true
+    },
+    "Marson2025_D2_Rest": {
+      "n_var": 18130,
+      "ensembl_provenance": "index",
+      "n_unresolved": 0,
+      "n_unique_keys": 18130,
+      "n_within_dataset_collisions": 0,
+      "has_mito_source": true
+    },
+    "Marson2025_D2_Stim48hr": {
+      "n_var": 18130,
+      "ensembl_provenance": "index",
+      "n_unresolved": 0,
+      "n_unique_keys": 18130,
+      "n_within_dataset_collisions": 0,
+      "has_mito_source": true
+    },
+    "Marson2025_D2_Stim8hr": {
+      "n_var": 18130,
+      "ensembl_provenance": "index",
+      "n_unresolved": 0,
+      "n_unique_keys": 18130,
+      "n_within_dataset_collisions": 0,
+      "has_mito_source": true
+    },
+    "Marson2025_D3_Rest": {
+      "n_var": 18130,
+      "ensembl_provenance": "index",
+      "n_unresolved": 0,
+      "n_unique_keys": 18130,
+      "n_within_dataset_collisions": 0,
+      "has_mito_source": true
+    },
+    "Marson2025_D3_Stim48hr": {
+      "n_var": 18130,
+      "ensembl_provenance": "index",
+      "n_unresolved": 0,
+      "n_unique_keys": 18130,
+      "n_within_dataset_collisions": 0,
+      "has_mito_source": true
+    },
+    "Marson2025_D3_Stim8hr": {
+      "n_var": 18130,
+      "ensembl_provenance": "index",
+      "n_unresolved": 0,
+      "n_unique_keys": 18130,
+      "n_within_dataset_collisions": 0,
+      "has_mito_source": true
+    },
+    "Marson2025_D4_Rest": {
+      "n_var": 18130,
+      "ensembl_provenance": "index",
+      "n_unresolved": 0,
+      "n_unique_keys": 18130,
+      "n_within_dataset_collisions": 0,
+      "has_mito_source": true
+    },
+    "Marson2025_D4_Stim48hr": {
+      "n_var": 18130,
+      "ensembl_provenance": "index",
+      "n_unresolved": 0,
+      "n_unique_keys": 18130,
+      "n_within_dataset_collisions": 0,
+      "has_mito_source": true
+    },
+    "Marson2025_D4_Stim8hr": {
+      "n_var": 18130,
+      "ensembl_provenance": "index",
+      "n_unresolved": 0,
+      "n_unique_keys": 18130,
+      "n_within_dataset_collisions": 0,
+      "has_mito_source": true
+    },
+    "ReplogleWeissman2022_K562_essential": {
+      "n_var": 8563,
+      "ensembl_provenance": "var[ensembl_id]",
+      "n_unresolved": 0,
+      "n_unique_keys": 8563,
+      "n_within_dataset_collisions": 0,
+      "has_mito_source": true
+    },
+    "ReplogleWeissman2022_K562_gwps": {
+      "n_var": 8248,
+      "ensembl_provenance": "var[ensembl_id]",
+      "n_unresolved": 0,
+      "n_unique_keys": 8248,
+      "n_within_dataset_collisions": 0,
+      "has_mito_source": true
+    },
+    "ReplogleWeissman2022_rpe1": {
+      "n_var": 8749,
+      "ensembl_provenance": "var[ensembl_id]",
+      "n_unresolved": 0,
+      "n_unique_keys": 8749,
+      "n_within_dataset_collisions": 0,
+      "has_mito_source": true
+    },
+    "ReplogleWeissman2025_HepG2": {
+      "n_var": 9624,
+      "ensembl_provenance": "index",
+      "n_unresolved": 0,
+      "n_unique_keys": 9624,
+      "n_within_dataset_collisions": 0,
+      "has_mito_source": true
+    },
+    "ReplogleWeissman2025_Jurkat": {
+      "n_var": 8882,
+      "ensembl_provenance": "index",
+      "n_unresolved": 0,
+      "n_unique_keys": 8882,
+      "n_within_dataset_collisions": 0,
+      "has_mito_source": true
+    },
+    "Wong2026": {
+      "n_var": 38606,
+      "ensembl_provenance": "gene_id_map (38606/38606)",
+      "n_unresolved": 0,
+      "n_unique_keys": 38606,
+      "n_within_dataset_collisions": 0,
+      "has_mito_source": false
+    },
+    "XAtlas2025_HCT116": {
+      "n_var": 38606,
+      "ensembl_provenance": "gene_id_map (38606/38606)",
+      "n_unresolved": 0,
+      "n_unique_keys": 38606,
+      "n_within_dataset_collisions": 0,
+      "has_mito_source": true
+    },
+    "XAtlas2025_HEK293T": {
+      "n_var": 38606,
+      "ensembl_provenance": "gene_id_map (38606/38606)",
+      "n_unresolved": 0,
+      "n_unique_keys": 38606,
+      "n_within_dataset_collisions": 0,
+      "has_mito_source": false
+    },
+    "Zhuang2026": {
+      "n_var": 38606,
+      "ensembl_provenance": "var[gene_ids]",
+      "n_unresolved": 0,
+      "n_unique_keys": 38606,
+      "n_within_dataset_collisions": 0,
+      "has_mito_source": false
+    }
+  },
+  "within_dataset_collisions": {}
+}
