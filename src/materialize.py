@@ -1,0 +1,251 @@
+"""Materialise a training DB from the canonical store + a recipe (Phase 4).
+
+One streaming pass does row-subset + column-slice + concat + ctrl/perturbed split.
+The old pipeline needed two stages for this -- ``prepare_dataset`` wrote 296 GB of
+per-dataset intermediates in hvg_pool gene space, then ``merge_datasets`` read them all
+back.  Because the store already shares one gene space, that round trip is unnecessary:
+``prepared/`` disappears entirely.
+
+Gene axis
+---------
+The store is Ensembl-keyed; the training DB is SYMBOL-keyed.  ``src/select.py`` does the
+collapse and hands us ``col_idx`` (positions into the vocabulary) plus the matching
+symbols, already deduplicated.
+
+Row order
+---------
+Datasets are concatenated in ``sorted(datasets)`` order, matching
+``workflow/scripts/merge.py:15``, and within a dataset the block's own row order is
+preserved.  Row order is part of the contract: the benchmark fold files store positional
+indices.
+"""
+from __future__ import annotations
+
+import logging
+from pathlib import Path
+
+import numpy as np
+import pandas as pd
+
+DEFAULT_ROW_CHUNK = 20_000
+
+
+def _open_out(f, name, n_obs, n_genes, dtype, compression):
+    g = f.create_group('X')
+    data = g.create_dataset('data', shape=(0,), maxshape=(None,), dtype=dtype,
+                            chunks=(1_000_000,), compression=compression)
+    ind = g.create_dataset('indices', shape=(0,), maxshape=(None,), dtype=np.int32,
+                           chunks=(1_000_000,), compression=compression)
+    return g, data, ind
+
+
+def materialize(
+    store: str | Path,
+    datasets: list[str],
+    col_idx: np.ndarray,
+    symbols: np.ndarray,
+    masks: dict[str, np.ndarray],
+    obs_by_ds: dict[str, pd.DataFrame],
+    out_pert: str | Path,
+    eff_scaled: dict[str, np.ndarray] | None = None,
+    feature_mask: np.ndarray | None = None,
+    dataset_to_mask_idx: dict[str, int] | None = None,
+    out_ctrl: str | Path | None = None,
+    dtype=np.int16,
+    compression: str | None = 'gzip',
+    defer_compression: bool = False,
+    row_chunk: int = DEFAULT_ROW_CHUNK,
+    verbose: bool = True,
+) -> dict:
+    """Stream the selected rows x columns of every block into the training DB(s).
+
+    ``defer_compression`` writes the outputs UNCOMPRESSED and then runs a single
+    ``h5repack -f GZIP=4`` pass over each, mirroring what the old pipeline's
+    ``defer_compression`` flag does between merge and compress_database.
+
+    Measured on this filesystem: inline h5py gzip sustains **4.6 MB/s**, h5repack
+    **10.7 MB/s** -- 2.3x, because h5repack does chunk-level bulk copies instead of the
+    thousands of resize+write calls the streaming loop makes.  The gzip write is the
+    materialise bottleneck (blocks read at ~560 MB/s), so this is the single biggest
+    lever available; parallelising per dataset and concatenating is strictly WORSE,
+    since the concat re-writes the whole output serially anyway.
+    """
+    import shutil
+    import subprocess
+    import h5py
+    from anndata.experimental import write_elem
+    from tqdm import tqdm
+
+    datasets = sorted(datasets)
+    store = Path(store)
+    n_genes = len(col_idx)
+
+    # vocabulary position -> output column, -1 to drop
+    col_map_global = None
+
+    split = out_ctrl is not None
+    obs_parts = {'pert': [], 'ctrl': []} if split else {'pert': []}
+    writers = {}
+    Path(out_pert).parent.mkdir(parents=True, exist_ok=True)
+
+    # When deferring, stream to a .uncompressed sidecar and h5repack it at the end.
+    final = {'pert': str(out_pert)}
+    if split:
+        final['ctrl'] = str(out_ctrl)
+    if defer_compression:
+        compression = None
+        tmp_of = {k: f'{v.removesuffix(".h5ad")}.uncompressed.h5ad'
+                  for k, v in final.items()}
+    else:
+        tmp_of = dict(final)
+
+    f_pert = h5py.File(tmp_of['pert'], 'w')
+    writers['pert'] = (f_pert,) + _open_out(f_pert, 'pert', 0, n_genes, dtype, compression)[1:]
+    indptr = {'pert': [0]}
+    if split:
+        f_ctrl = h5py.File(tmp_of['ctrl'], 'w')
+        writers['ctrl'] = (f_ctrl,) + _open_out(f_ctrl, 'ctrl', 0, n_genes, dtype, compression)[1:]
+        indptr['ctrl'] = [0]
+    write_ptr = {k: 0 for k in writers}
+
+    stats = {'n_pert': 0, 'n_ctrl': 0, 'nnz_pert': 0, 'nnz_ctrl': 0}
+
+    for ds in datasets:
+        block = store / 'cells' / f'{ds}.h5ad'
+        mask = np.asarray(masks[ds], dtype=bool)
+        obs = obs_by_ds[ds]
+        with h5py.File(str(block), 'r') as f:
+            X = f['X']
+            n_obs, n_var = (int(v) for v in X.attrs['shape'])
+            if col_map_global is None:
+                col_map_global = np.full(n_var, -1, dtype=np.int32)
+                col_map_global[col_idx] = np.arange(n_genes, dtype=np.int32)
+            assert len(mask) == n_obs, (
+                f'{ds}: mask has {len(mask)} entries, block has {n_obs} rows')
+            src_indptr = X['indptr'][:]
+            data, indices = X['data'], X['indices']
+
+            is_ctrl = obs['is_ctrl'].to_numpy().astype(bool)
+            it = range(0, n_obs, row_chunk)
+            for s in (tqdm(it, desc=f'materialize {ds}') if verbose else it):
+                e = min(s + row_chunk, n_obs)
+                cm = mask[s:e]
+                if not cm.any():
+                    continue
+                a, b = int(src_indptr[s]), int(src_indptr[e])
+                lengths = (src_indptr[s + 1:e + 1] - src_indptr[s:e]).astype(np.intp)
+                if b > a:
+                    d = np.asarray(data[a:b])
+                    idx = np.asarray(indices[a:b])
+                    row_of = np.repeat(np.arange(e - s, dtype=np.int64), lengths)
+                    mapped = col_map_global[idx]
+                else:
+                    d = np.zeros(0, dtype=dtype)
+                    idx = np.zeros(0, dtype=np.int64)
+                    row_of = np.zeros(0, dtype=np.int64)
+                    mapped = np.zeros(0, dtype=np.int32)
+
+                for key, want in (('ctrl', True), ('pert', False)) if split \
+                        else (('pert', None),):
+                    sel_rows = cm & (is_ctrl[s:e] == want) if split else cm
+                    n_keep = int(sel_rows.sum())
+                    if n_keep == 0:
+                        continue
+                    keep = (mapped >= 0) & sel_rows[row_of] if d.size else \
+                        np.zeros(0, dtype=bool)
+                    dd = d[keep]
+                    mm = mapped[keep]
+                    rr = row_of[keep]
+                    local = (np.cumsum(sel_rows) - 1)[rr] if dd.size else \
+                        np.zeros(0, dtype=np.int64)
+                    row_nnz = np.bincount(local, minlength=n_keep) if dd.size else \
+                        np.zeros(n_keep, dtype=np.int64)
+                    base = indptr[key][-1]
+                    indptr[key].extend((base + np.cumsum(row_nnz)).tolist())
+
+                    if dd.size:
+                        order = np.lexsort((mm, local))
+                        _, dset, iset = writers[key]
+                        w = write_ptr[key]
+                        dset.resize(w + dd.size, axis=0)
+                        iset.resize(w + dd.size, axis=0)
+                        dset[w:w + dd.size] = dd[order].astype(dtype)
+                        iset[w:w + dd.size] = mm[order].astype(np.int32)
+                        write_ptr[key] = w + dd.size
+
+            assert len(obs) == n_obs, (
+                f'{ds}: obs has {len(obs)} rows, block has {n_obs} -- obs is used '
+                f'POSITIONALLY against the block, so a mismatch silently mislabels cells')
+            sub = obs[mask].copy()
+            # Build the index from a plain array: assigning a Series makes the index
+            # inherit its name ('barcode'), which then collides with the existing
+            # column on write.  src/prepare.py:167-169 guards the same case.
+            sub.index = pd.Index(
+                (sub['barcode'].astype(str) + ';' + ds).to_numpy(), name=None)
+            sub['dataset'] = ds
+            # Every downstream splitter defaults to cls_col='perturbation'
+            # (src/split.py:270, gen_benchmark_split.py) -- without this alias the
+            # benchmark stage cannot read the DB at all.
+            sub['perturbation'] = sub['label'].astype(str)
+            # Scaled efficiency, computed by select.scale_efficiency over the SELECTED
+            # population.  The old DB carried this as obs['efficiency']
+            # (src/prepare.py:213-219); dropping it would silently lose the column.
+            if eff_scaled is not None and eff_scaled.get(ds) is not None:
+                sub['efficiency'] = np.asarray(eff_scaled[ds])[mask]
+            if split:
+                obs_parts['ctrl'].append(sub[sub.is_ctrl.astype(bool)])
+                obs_parts['pert'].append(sub[~sub.is_ctrl.astype(bool)])
+            else:
+                obs_parts['pert'].append(sub)
+
+    var = pd.DataFrame(index=pd.Index(np.asarray(symbols, dtype=str)))
+    for key, (f, dset, iset) in writers.items():
+        obs_all = pd.concat(obs_parts[key], axis=0) if obs_parts[key] else pd.DataFrame()
+        ip = np.asarray(indptr[key], dtype=np.int64)
+        f['X'].create_dataset('indptr', data=ip, compression=compression)
+        f['X'].attrs['encoding-type'] = 'csr_matrix'
+        f['X'].attrs['encoding-version'] = '0.1.0'
+        f['X'].attrs['shape'] = [len(obs_all), n_genes]
+        if obs_all.index.name and obs_all.index.name in obs_all.columns:
+            obs_all = obs_all.copy()
+            obs_all.index.name = None
+        write_elem(f, 'obs', obs_all)
+        write_elem(f, 'var', var)
+        for slot in ('obsm', 'obsp', 'varp', 'layers'):
+            f.create_group(slot)
+        # varm/feature_mask_per_dataset + uns/dataset_to_mask_idx: which genes are
+        # ACTIVE vs zero-padded per dataset.  Downstream needs this because CSR
+        # zero-padding makes a padded gene indistinguishable from a measured all-zero
+        # one.  Shape/dtype/ordering match the old merge (src/merge.py:40-52).
+        varm_g = f.create_group('varm')
+        uns_g = f.create_group('uns')
+        if feature_mask is not None:
+            assert feature_mask.shape[0] == n_genes, (
+                f'feature_mask has {feature_mask.shape[0]} rows, expected {n_genes}')
+            write_elem(varm_g, 'feature_mask_per_dataset',
+                       np.asarray(feature_mask, dtype=np.float64))
+            d2i = uns_g.create_group('dataset_to_mask_idx')
+            for name, i in sorted((dataset_to_mask_idx or {}).items(),
+                                  key=lambda kv: kv[1]):
+                d2i.create_dataset(name, data=np.int64(i))
+        f.attrs['encoding-type'] = 'anndata'
+        f.attrs['encoding-version'] = '0.1.0'
+        stats[f'n_{key}'] = len(obs_all)
+        stats[f'nnz_{key}'] = int(write_ptr[key])
+        f.close()
+
+    if defer_compression:
+        if shutil.which('h5repack') is None:
+            raise RuntimeError(
+                'defer_compression=True needs h5repack on PATH; it is not there. '
+                'Re-run with defer_compression=False to compress inline.')
+        for key, dst in final.items():
+            src = tmp_of[key]
+            logging.info(f'h5repack -f GZIP=4 {src} -> {dst}')
+            subprocess.run(['h5repack', '-f', 'GZIP=4', src, dst], check=True)
+            Path(src).unlink()
+        for key, dst in final.items():
+            stats[f'gb_{key}'] = round(Path(dst).stat().st_size / 1024 ** 3, 3)
+
+    logging.info(f'materialized: {stats}')
+    return stats
