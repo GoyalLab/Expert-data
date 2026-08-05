@@ -49,6 +49,46 @@ def get_param_hash(p: dict, dataset_indices: list[str], d: int = 8):
     s += 'datasets:' + ','.join(sorted(dataset_indices))
     return hash(s, d)
 
+# Parameters that affect a SINGLE dataset's canonical block and sidecars.  Everything
+# else -- the dataset list, the perturbation pool, min_cells_per_perturbation, merge /
+# split / benchmark settings -- is applied at selection time and must NOT invalidate a
+# stored block.  Splitting the hash this way is what makes adding dataset N+1 cheap:
+# with one global hash, appending a dataset moved OUTPUT_DIR and orphaned every
+# per-dataset artifact even though none of their inputs had changed.
+DATASET_PARAM_KEYS = (
+    'qc',
+    'n_ctrl',
+    'seed',
+    'single_perturbations_only',
+    'perturbation_col',
+    'ctrl_key',
+    # n_hvg is included because canonicalize stores the `highly_variable` /
+    # `highly_variable_rank` columns using it.  The underlying `variances_norm` is
+    # n_hvg-independent, so this could be relaxed later by having selection re-rank.
+    'n_hvg',
+)
+
+
+def get_dataset_hash(p: dict, vocab_version: str, d: int = 8) -> str:
+    """Hash of the params that determine one dataset's canonical block.
+
+    Deliberately excludes the dataset list -- a block is a pure function of its raw
+    file, these parameters, and the gene vocabulary.
+    """
+    items = {k: p.get(k) for k in DATASET_PARAM_KEYS}
+    items['vocab_version'] = vocab_version
+    s = ';'.join(f'{k}:{items[k]}' for k in sorted(items))
+    return hash(s, d)
+
+
+def get_recipe_hash(p: dict, dataset_indices: list[str], d: int = 8) -> str:
+    """Hash of the full configuration + dataset list: keys the materialised DB.
+
+    Same semantics as get_param_hash; named separately so call sites read clearly.
+    """
+    return get_param_hash(p, dataset_indices, d=d)
+
+
 def save_config(c: dict, o: str):
     d = os.path.dirname(o)
     os.makedirs(d, exist_ok=True)

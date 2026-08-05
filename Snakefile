@@ -2,6 +2,8 @@ import os
 from src.workflow_utils import (
     load_configs,
     get_param_hash,
+    get_dataset_hash,
+    get_recipe_hash,
     save_config,
     read_data_sheet,
     get_job_resources,
@@ -92,6 +94,140 @@ MERGE_CTRL_OUT = _uncompressed_name(CTRL_PATH) if DEFER_MERGE_SPLIT else CTRL_PA
 BENCHMARK_SIZES = [int(s) for s in config.get('benchmark_sizes', [])]
 BENCHMARK_DIR = os.path.join(OUTPUT_DIR, 'benchmarks', 'splits')
 BENCHMARK_INPUT = ENDPOINT if config['split_ctrl'] else SPLIT_INPUT
+
+## CANONICAL STORE (Phase 0-2)
+# Append-only, Ensembl-keyed store.  Per-dataset artifacts are keyed on DATASET_HASH,
+# which deliberately excludes the dataset list -- adding dataset N+1 must not orphan the
+# other N blocks.  These rules are NOT part of `rule all` yet; request them explicitly:
+#     snakemake --configfile ... canonicalize_all
+VOCAB_VERSION = str(config.get('vocab_version', 'v1'))
+VOCAB_FILE = os.path.join(workflow.basedir, 'resources', 'vocab', f'genes_{VOCAB_VERSION}.tsv')
+DATASET_HASH = get_dataset_hash(config, VOCAB_VERSION)
+STORE_DIR = os.path.join(str(config.get('store_dir', os.path.join(CACHE_DIR, 'store'))), DATASET_HASH)
+
+# The build is INCREMENTAL: it loads the existing vocabulary and only appends keys it
+# has never seen, so running against whichever datasheet the config names is safe --
+# a subset is a no-op, and a new dataset extends the vocabulary in place, leaving every
+# already-written block valid.  `scripts/build_vocab.py --rebuild` is the deliberate
+# escape hatch for cutting a NEW vocabulary version.
+rule build_vocab:
+    output:
+        vocab = VOCAB_FILE
+    log:
+        os.path.join(LOG, 'build_vocab.log')
+    params:
+        raw_dir = DWNL_DIR,
+        datasheet = str(config['datasheet'])
+    resources:
+        **get_job_resources(config['resources'], job_name='build_gene_pool',
+                            output=os.path.join(LOG, 'build_vocab.slurm.log'))
+    shell:
+        "python scripts/build_vocab.py --raw-dir {params.raw_dir} "
+        "--datasheet {params.datasheet} --out {output.vocab} > {log} 2>&1"
+
+# Per-dataset canonicalisation: 3 streaming passes, O(chunk)+O(n_genes) memory.
+rule canonicalize:
+    input:
+        raw = os.path.join(DWNL_DIR, "{dataset}.h5ad"),
+        vocab = VOCAB_FILE
+    output:
+        block = os.path.join(STORE_DIR, 'cells', "{dataset}.h5ad"),
+        obs = os.path.join(STORE_DIR, 'obs', "{dataset}.parquet"),
+        hvg = os.path.join(STORE_DIR, 'stats', "{dataset}.hvg.parquet"),
+        ctrl = os.path.join(STORE_DIR, 'ctrl', "{dataset}.txt"),
+        qc = os.path.join(STORE_DIR, 'qc', "{dataset}.json"),
+        summary = os.path.join(STORE_DIR, 'summary', "{dataset}.json")
+    log:
+        os.path.join(LOG, 'canonicalize', "{dataset}.log")
+    params:
+        name = lambda wildcards: wildcards.dataset,
+        store_dir = STORE_DIR,
+        cancer = lambda wildcards: DATASET_SHEET.loc[wildcards.dataset, DATA_SHEET_KEYS.CANCER],
+        n_ctrl = config['n_ctrl'],
+        n_hvg = config['n_hvg'],
+        seed = config['seed'],
+        source_p_col = lambda wildcards: get_perturbation_col_override(DATASET_SHEET, wildcards.dataset)
+    resources:
+        **get_job_resources(config['resources'], job_name='canonicalize',
+                            output=lambda wildcards: os.path.join(LOG, 'canonicalize', f"{wildcards.dataset}.slurm.log"))
+    script:
+        "workflow/scripts/canonicalize.py"
+
+rule canonicalize_all:
+    input:
+        expand(os.path.join(STORE_DIR, 'summary', "{dataset}.json"), dataset=DATASET_NAMES)
+
+
+## PHASE 3 -- batched efficiency.
+# The fan-out width is FIXED (n_eff_batches) rather than derived from a cell cap, so
+# Snakemake knows it at DAG-construction time and no checkpoint is needed.  Every batch
+# job recomputes the same deterministic partition from the obs sidecar.
+N_EFF_BATCHES = int(config.get('n_eff_batches', 16))
+EFF_BATCH_IDS = list(range(N_EFF_BATCHES))
+
+# E0 + E1: pin the HVG space, the normalise/scale parameters and the PCA basis once.
+rule efficiency_fit:
+    input:
+        block = os.path.join(STORE_DIR, 'cells', "{dataset}.h5ad"),
+        stats = os.path.join(STORE_DIR, 'stats', "{dataset}.hvg.parquet"),
+        obs = os.path.join(STORE_DIR, 'obs', "{dataset}.parquet")
+    output:
+        fit = os.path.join(STORE_DIR, 'eff', "{dataset}.fit.npz")
+    log:
+        os.path.join(LOG, 'efficiency_fit', "{dataset}.log")
+    params:
+        n_hvg = config['n_hvg'],
+        n_pcs = config.get('n_pcs', 40)
+    resources:
+        **get_job_resources(config['resources'], job_name='efficiency_fit',
+                            output=lambda wildcards: os.path.join(LOG, 'efficiency_fit', f"{wildcards.dataset}.slurm.log"))
+    script:
+        "workflow/scripts/efficiency_fit.py"
+
+# E2: one job per batch of perturbations. Reads ONLY the HVG columns, which is what
+# removes the dominant memory term (the current rule sc.read()s all 38,606 genes).
+rule efficiency_batch:
+    input:
+        block = os.path.join(STORE_DIR, 'cells', "{dataset}.h5ad"),
+        obs = os.path.join(STORE_DIR, 'obs', "{dataset}.parquet"),
+        fit = os.path.join(STORE_DIR, 'eff', "{dataset}.fit.npz")
+    output:
+        scores = os.path.join(STORE_DIR, 'eff', "{dataset}", "batch_{batch}.parquet")
+    log:
+        os.path.join(LOG, 'efficiency_batch', "{dataset}_{batch}.log")
+    params:
+        batch_id = lambda wildcards: int(wildcards.batch),
+        n_batches = N_EFF_BATCHES,
+        min_deg = config['min_deg']
+    resources:
+        **get_job_resources(config['resources'], job_name='efficiency_batch',
+                            output=lambda wildcards: os.path.join(LOG, 'efficiency_batch', f"{wildcards.dataset}_{wildcards.batch}.slurm.log"))
+    script:
+        "workflow/scripts/efficiency_batch.py"
+
+# E3: concatenate. Stores the RAW SIGNED z -- no _scale_scores, which would bake a
+# whole-input quantile (and an np.abs) into the persisted value.
+rule efficiency_gather:
+    input:
+        scores = expand(os.path.join(STORE_DIR, 'eff', "{{dataset}}", "batch_{batch}.parquet"),
+                        batch=EFF_BATCH_IDS),
+        obs = os.path.join(STORE_DIR, 'obs', "{dataset}.parquet")
+    output:
+        eff = os.path.join(STORE_DIR, 'stats', "{dataset}.eff.parquet"),
+        degs = os.path.join(STORE_DIR, 'stats', "{dataset}.degs.json")
+    log:
+        os.path.join(LOG, 'efficiency_gather', "{dataset}.log")
+    resources:
+        **get_job_resources(config['resources'], job_name='efficiency_gather',
+                            output=lambda wildcards: os.path.join(LOG, 'efficiency_gather', f"{wildcards.dataset}.slurm.log"))
+    script:
+        "workflow/scripts/efficiency_gather.py"
+
+rule efficiency_all:
+    input:
+        expand(os.path.join(STORE_DIR, 'stats', "{dataset}.eff.parquet"),
+               dataset=DATASET_NAMES)
+
 
 ## PIPELINE START
 
