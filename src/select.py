@@ -215,9 +215,25 @@ def select_rows(
     sidecars: dict[str, dict],
     pool: set,
     min_cells_per_perturbation: int = 50,
-) -> dict[str, np.ndarray]:
-    """Per-dataset boolean row mask over the block's row space."""
-    masks = {}
+    zs_min_cells_per_perturbation: int = 0,
+    zs_eval_cap: int = 0,
+    seed: int = 42,
+) -> tuple[dict[str, np.ndarray], dict[str, np.ndarray]]:
+    """Per-dataset row masks over the block's row space: (selected, zero-shot).
+
+    The zero-shot mask is the COMPLEMENT of the pool among perturbed cells -- every
+    perturbation the shared pool excluded.  Those cells are otherwise discarded, so
+    routing them to a third output costs one extra write on a pass we are making
+    anyway, instead of a separate extraction job over the raw files.
+
+    ``zs_eval_cap`` subsamples it to at most that many cells per
+    (dataset x perturbation) group, the same rule val/test use.  The zero-shot set is an
+    EVALUATION set, so breadth (all 17,305 perturbations represented) matters and depth
+    does not: capping at 10 keeps 8.4% of the cells and turns a ~64 GB output into ~5 GB.
+    Sampling is seeded, so the chosen cells are reproducible.
+    """
+    rng = np.random.default_rng(seed)
+    masks, zs_masks = {}, {}
     for ds, sc in sidecars.items():
         obs = sc['obs']
         labels = obs['label'].to_numpy().astype(str)
@@ -235,10 +251,37 @@ def select_rows(
         mask |= is_ctrl
 
         masks[ds] = mask
+
+        # zero-shot: perturbed, valid label, NOT in the pool.  Disjoint from `mask`
+        # by construction, so no cell can land in both outputs.
+        valid = ~np.isin(labels, ['', 'nan', 'None'])
+        zs = (~is_ctrl) & valid & ~np.isin(labels, list(pool))
+        if zs_min_cells_per_perturbation > 0:
+            vc = pd.Series(labels[zs]).value_counts()
+            ok = {str(p) for p, c in vc.items() if c >= zs_min_cells_per_perturbation}
+            zs &= np.isin(labels, list(ok))
+        if zs_eval_cap > 0 and zs.any():
+            keep = np.zeros(len(zs), dtype=bool)
+            pos = np.where(zs)[0]
+            lab_zs = labels[pos]
+            order = np.argsort(lab_zs, kind='stable')
+            ls = lab_zs[order]
+            uniq, starts = np.unique(ls, return_index=True)
+            ends = np.append(starts[1:], len(ls))
+            for a, b in zip(starts, ends):
+                grp = pos[order[a:b]]
+                take = grp if len(grp) <= zs_eval_cap else rng.choice(
+                    grp, zs_eval_cap, replace=False)
+                keep[take] = True
+            zs = keep
+        assert not (zs & mask).any(), f'{ds}: zero-shot overlaps the selected set'
+        zs_masks[ds] = zs
+
         logging.info(f'  {ds:38s} {int(mask.sum()):>9,}/{len(mask):>9,} rows '
                      f'({int((mask & ~is_ctrl).sum()):,} perturbed + '
-                     f'{int((mask & is_ctrl).sum()):,} control)')
-    return masks
+                     f'{int((mask & is_ctrl).sum()):,} control)  '
+                     f'zero-shot {int(zs.sum()):,}')
+    return masks, zs_masks
 
 
 def scale_efficiency(sidecars: dict[str, dict], masks: dict[str, np.ndarray],
@@ -281,6 +324,9 @@ def build_recipe(
     min_cells_per_class: int = 20,
     min_dataset_frac: float = 0.6,
     min_cells_per_perturbation: int = 50,
+    zs_min_cells_per_perturbation: int = 0,
+    zs_eval_cap: int = 10,
+    seed: int = 42,
     raw_dir: str | Path | None = None,
 ) -> dict:
     """Full selection. Returns a JSON-serialisable recipe plus the in-memory masks."""
@@ -304,8 +350,10 @@ def build_recipe(
     pool = build_pool(sidecars, broad_keys,
                       min_cells_per_class=min_cells_per_class,
                       min_dataset_frac=min_dataset_frac)
-    masks = select_rows(sidecars, pool,
-                        min_cells_per_perturbation=min_cells_per_perturbation)
+    masks, zs_masks = select_rows(
+        sidecars, pool, min_cells_per_perturbation=min_cells_per_perturbation,
+        zs_min_cells_per_perturbation=zs_min_cells_per_perturbation,
+        zs_eval_cap=zs_eval_cap, seed=seed)
     eff_scaled = scale_efficiency(sidecars, masks)
 
     feature_mask, ds_to_idx = (None, None)
@@ -323,10 +371,12 @@ def build_recipe(
             'min_cells_per_class': min_cells_per_class,
             'min_dataset_frac': min_dataset_frac,
             'min_cells_per_perturbation': min_cells_per_perturbation,
+            'zs_eval_cap': zs_eval_cap, 'seed': seed,
         },
         'columns': {'n_before_dedup': cols['n_before_dedup'],
                     'n_dropped_dedup': cols['n_dropped_dedup']},
         'pool_size': len(pool),
+        'n_cells_zero_shot': int(sum(int(m.sum()) for m in zs_masks.values())),
         'per_dataset': {ds: {'n_rows_block': int(len(m)),
                              'n_rows_selected': int(m.sum())}
                         for ds, m in masks.items()},
@@ -334,15 +384,21 @@ def build_recipe(
     return {'recipe': recipe, 'col_idx': cols['col_idx'], 'symbols': cols['symbols'],
             'masks': masks, 'pool': pool, 'sidecars': sidecars,
             'eff_scaled': eff_scaled, 'feature_mask': feature_mask,
-            'dataset_to_mask_idx': ds_to_idx}
+            'dataset_to_mask_idx': ds_to_idx, 'zs_masks': zs_masks}
 
 
 def save_recipe(sel: dict, path: str | Path) -> None:
     p = Path(path)
     p.parent.mkdir(parents=True, exist_ok=True)
     p.write_text(json.dumps(sel['recipe'], indent=2, default=str))
-    np.savez_compressed(
-        str(p).replace('.json', '.npz'),
-        col_idx=sel['col_idx'], symbols=np.asarray(sel['symbols'], dtype='U'),
+    arrays = {
+        'col_idx': sel['col_idx'],
+        'symbols': np.asarray(sel['symbols'], dtype='U'),
         **{f'mask__{ds}': m for ds, m in sel['masks'].items()},
-    )
+        **{f'zs__{ds}': m for ds, m in sel.get('zs_masks', {}).items()},
+    }
+    # The feature mask is derived from the raw /var files, so persisting it here means
+    # materialize does not have to re-read 22 raw headers.
+    if sel.get('feature_mask') is not None:
+        arrays['feature_mask'] = sel['feature_mask']
+    np.savez_compressed(str(p).replace('.json', '.npz'), **arrays)

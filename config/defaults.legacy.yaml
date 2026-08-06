@@ -1,0 +1,164 @@
+# Base parameters for ExPert datasets merge
+## I/O options:
+datasheet: 'resources/datasets/meta/filtered_datasets_hg38.csv'
+output_dir: 'results'                       # Final pipeline outputs, i.e. merged dataset (h5ad), filtered cell meta, and highly variable gene information will be saved to this directory
+cache_dir: 'data_cache'                     # NOTICE: Datasets will be downloaded to this directory and multiple copies of it will be saved here, so make sure there is enough disk space
+log_dir: 'logs'
+plot_dir: 'plots'                           # Change to '' if you don't want meta overview plots
+## Pre-processing:
+perturbation_col: 'perturbation'            # Column name to look for in .obs that specifies the perturbation label
+ctrl_key: 'control'                         # Column value in .obs[perturbation_col] that represents control cells
+use_perturbation_pool: true                # Filter every dataset for biggest common set of perturbations
+use_feature_pool: false                      # Filter for shared features across all datasets
+qc: true                                    # Do quality control on cells (e.g. check for percentage of mitochondiral counts)
+norm: false                                 # Apply sc.pp.normalize_total()
+log_norm: false                             # Apply log1p scaling
+scale: false                                # Center and scale the data
+hvg: true                                   # Calculate highly variable genes
+n_hvg: 3000                                 # Number of highly variable genes to filter for (required if raw data is used)
+subset_hvg: false                           # Directly subset to hvgs (not recommended)
+n_ctrl: 10000                               # Maximum number of control cells, randomly draw n_ctrl if there are more control cells than that, keep all if less
+single_perturbations_only: true             # Exclude multiple perturbations from dataset
+z_score_filter: false                        # Filter cells based on euclidian distance to mean control expression in dataset
+control_neighbor_threshold: 0.0               # Filter cells based on percentage of neighbors that are from the same class, set to 0.0 to ignore
+min_cells_per_perturbation: 20                # Filter perturbations for a minimum number of cells WITHIN a dataset
+min_cells_per_class: 20                    # Minimum number of cells per class (perturbation) ACROSS datasets
+min_dataset_frac: 0.6                       # Fraction of datasets a perturbation has to be shared across to be included in the pool
+
+## Efficiency filter:
+efficiency_filter: true                     # Custom python implementation of mixscale (much faster)
+mixscale_filter: false                       # Filter cells by knockdown efficiency (based on mixscale: https://www.biorxiv.org/content/10.1101/2024.01.29.576933v2)
+min_deg: 5                                  # Minimum amount of differentially expressed genes compared to control cells for each perturbation to pass filtering
+ctrl_dev: 0.0                               # Minimum standart deviation of perturbed cells mixscale score to control
+
+## Merge & Harmonize:
+zero_padding: true                          # Keep genes that are not overlapping with genes from other experiments (assign 0 to them)
+correction_method: 'skip'                   # How to harmonize the data over the different experiments, can be one of: 'scANVI', 'scanorama', 'harmonypy', 'skip'
+merge_method: 'concat_on_disk'              # How to merge datasets: 'concat_on_disk' (memory-efficient) or 'in_memory'
+var_merge: 'union'                   # Choose intersection or union of genes for merged dataset
+defer_compression: false                    # Write prepare/merge intermediates uncompressed and gzip the final split databases with a single h5repack pass (faster; larger intermediate disk use, same end size)
+## Pre-computed embeddings
+gene_embedding: ''                          # Set path to gene embedding to add to meta-set, will be used to describe perturbations
+context_embedding: ''                       # Set path to context embedding TODO: (scTab will be used by default)
+add_emb_for_features: false                 # Whether to add embedding information on a feature level
+## Split into control and perturbed
+split_ctrl: true                            # Creates two output .h5ad files for control and perturbed cells
+
+## Benchmark splits
+benchmark_sizes: [200, -1]            # List of perturbation subset sizes for nested benchmark splits, e.g. [200, 1000]. Empty = skip.
+benchmark_n_folds: 6                        # Number of OOD folds per benchmark split
+benchmark_context_groups: 'auto'            # How to group contexts for OOD folds: 'auto', 'none', or dict
+
+## Other:
+cache: true                                 # Whether to cache existing runs or re-run everything
+cores: 20                                   # Maximum number of cores to use for the run
+plot: false                                 # Whether to plot the entire merged dataset
+do_umap: false
+do_tsne: false
+seed: 42                                    # Set seed for reproducibility
+
+## Slurm config:
+# Set RAM limits for all tasks that require loading datasets into memory
+resources:
+  time:
+    short: '4:00:00'
+    medium: '24:00:00'
+    long: '48:00:00'
+    default: '48:00:00'
+
+  memory:
+    min_mem: 20                 # Minimum RAM (GB)
+    default: 100
+    max_mem: 220                # Maximum RAM (GB) of default partition, tries to switch to high_mem if more is needed
+
+  partitions:                   # Set your slurm partitions here
+    default: 'normal'                 
+    high_mem: ''
+    gpu: ''
+
+  jobs:
+    download_dataset:
+      time: '12:00:00'
+      mem: '20GB'
+
+    meta_info:
+      time: '2:00:00'
+      mem: '120GB'
+
+    process_dataset:
+      time: '48:00:00'
+
+    setup_mixscale:
+      time: '4:00:00'
+      mem: '20GB'
+
+    mixscale:
+      time: '48:00:00'
+
+    filter_cells_by_efficiency:
+      time: '48:00:00'
+
+    determine_hvg:
+      time: '4:00:00'
+      mem: '20GB'
+
+    # Canonical store (Phase 2).  Three streaming passes, O(chunk)+O(n_genes) memory,
+    # so this does NOT scale with dataset size -- unlike process_dataset, which it
+    # replaces and which requested up to 400GB from the hand-written datasheet column.
+    canonicalize:
+      time: '24:00:00'
+      mem: '48GB'
+
+    # Phase 3 efficiency.  E2 reads only the 3000 HVG columns and holds
+    # (batch + n_ctrl) x n_hvg x 4 bytes, so it is small and flat -- unlike the rule it
+    # replaces, whose peak was nnz_full*B + nnz_hvg*B (153 GiB on XAtlas2025_HEK293T).
+    efficiency_fit:
+      time: '8:00:00'
+      mem: '32GB'
+    efficiency_batch:
+      time: '8:00:00'
+      mem: '24GB'
+    efficiency_gather:
+      time: '2:00:00'
+      mem: '16GB'
+
+    # Phase 4.  build_recipe is pure metadata (seconds-to-minutes).  materialize is one
+    # streaming pass; measured 5h59m / 22.5 GB peak for the 22-dataset, 103 GB DB, and
+    # the gzip write is the bottleneck at ~4.8 MB/s.
+    build_recipe:
+      time: '4:00:00'
+      mem: '32GB'
+    materialize:
+      time: '36:00:00'      # +zero-shot output: ~12.1M more cells to write
+      mem: '48GB'
+    gen_ood_splits:
+      time: '8:00:00'
+      mem: '64GB'
+
+    build_gene_pool:
+      time: '4:00:00'
+      mem: '20GB'
+
+    prepare_dataset:
+      time: '4:00:00'
+      mem: '10GB'
+
+    merge_datasets:
+      time: '4:00:00'
+      mem: '50GB'
+
+    harmonize:
+      time: '48:00:00'
+      mem: '200GB'
+
+    add_gene_embedding:
+      time: '4:00:00'
+      mem: '200GB'
+
+    split_ctrl:
+      time: '4:00:00'
+      mem: '20GB'
+
+    gen_benchmark_split:
+      time: '48:00:00'
+      mem: '100GB'

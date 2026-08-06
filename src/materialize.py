@@ -51,6 +51,8 @@ def materialize(
     feature_mask: np.ndarray | None = None,
     dataset_to_mask_idx: dict[str, int] | None = None,
     out_ctrl: str | Path | None = None,
+    zs_masks: dict[str, np.ndarray] | None = None,
+    out_zs: str | Path | None = None,
     dtype=np.int16,
     compression: str | None = 'gzip',
     defer_compression: bool = False,
@@ -84,7 +86,9 @@ def materialize(
     col_map_global = None
 
     split = out_ctrl is not None
-    obs_parts = {'pert': [], 'ctrl': []} if split else {'pert': []}
+    want_zs = out_zs is not None and zs_masks is not None
+    keys = ['pert'] + (['ctrl'] if split else []) + (['zs'] if want_zs else [])
+    obs_parts = {k: [] for k in keys}
     writers = {}
     Path(out_pert).parent.mkdir(parents=True, exist_ok=True)
 
@@ -92,6 +96,8 @@ def materialize(
     final = {'pert': str(out_pert)}
     if split:
         final['ctrl'] = str(out_ctrl)
+    if want_zs:
+        final['zs'] = str(out_zs)
     if defer_compression:
         compression = None
         tmp_of = {k: f'{v.removesuffix(".h5ad")}.uncompressed.h5ad'
@@ -106,13 +112,18 @@ def materialize(
         f_ctrl = h5py.File(tmp_of['ctrl'], 'w')
         writers['ctrl'] = (f_ctrl,) + _open_out(f_ctrl, 'ctrl', 0, n_genes, dtype, compression)[1:]
         indptr['ctrl'] = [0]
+    if want_zs:
+        f_zs = h5py.File(tmp_of['zs'], 'w')
+        writers['zs'] = (f_zs,) + _open_out(f_zs, 'zs', 0, n_genes, dtype, compression)[1:]
+        indptr['zs'] = [0]
     write_ptr = {k: 0 for k in writers}
 
-    stats = {'n_pert': 0, 'n_ctrl': 0, 'nnz_pert': 0, 'nnz_ctrl': 0}
+    stats = {f'{p}_{k}': 0 for k in keys for p in ('n', 'nnz')}
 
     for ds in datasets:
         block = store / 'cells' / f'{ds}.h5ad'
         mask = np.asarray(masks[ds], dtype=bool)
+        zs = np.asarray(zs_masks[ds], dtype=bool) if want_zs else None
         obs = obs_by_ds[ds]
         with h5py.File(str(block), 'r') as f:
             X = f['X']
@@ -126,11 +137,20 @@ def materialize(
             data, indices = X['data'], X['indices']
 
             is_ctrl = obs['is_ctrl'].to_numpy().astype(bool)
+            # One boolean per output; disjoint by construction (zs excludes pool cells,
+            # and controls are never in zs).
+            route = {'pert': mask & ~is_ctrl if split else mask}
+            if split:
+                route['ctrl'] = mask & is_ctrl
+            if want_zs:
+                route['zs'] = zs
+            touched = np.zeros(n_obs, dtype=bool)
+            for r in route.values():
+                touched |= r
             it = range(0, n_obs, row_chunk)
             for s in (tqdm(it, desc=f'materialize {ds}') if verbose else it):
                 e = min(s + row_chunk, n_obs)
-                cm = mask[s:e]
-                if not cm.any():
+                if not touched[s:e].any():
                     continue
                 a, b = int(src_indptr[s]), int(src_indptr[e])
                 lengths = (src_indptr[s + 1:e + 1] - src_indptr[s:e]).astype(np.intp)
@@ -145,9 +165,8 @@ def materialize(
                     row_of = np.zeros(0, dtype=np.int64)
                     mapped = np.zeros(0, dtype=np.int32)
 
-                for key, want in (('ctrl', True), ('pert', False)) if split \
-                        else (('pert', None),):
-                    sel_rows = cm & (is_ctrl[s:e] == want) if split else cm
+                for key in keys:
+                    sel_rows = route[key][s:e]
                     n_keep = int(sel_rows.sum())
                     if n_keep == 0:
                         continue
@@ -176,27 +195,24 @@ def materialize(
             assert len(obs) == n_obs, (
                 f'{ds}: obs has {len(obs)} rows, block has {n_obs} -- obs is used '
                 f'POSITIONALLY against the block, so a mismatch silently mislabels cells')
-            sub = obs[mask].copy()
+            sub_all = obs.copy()
             # Build the index from a plain array: assigning a Series makes the index
             # inherit its name ('barcode'), which then collides with the existing
             # column on write.  src/prepare.py:167-169 guards the same case.
-            sub.index = pd.Index(
-                (sub['barcode'].astype(str) + ';' + ds).to_numpy(), name=None)
-            sub['dataset'] = ds
+            sub_all.index = pd.Index(
+                (sub_all['barcode'].astype(str) + ';' + ds).to_numpy(), name=None)
+            sub_all['dataset'] = ds
             # Every downstream splitter defaults to cls_col='perturbation'
             # (src/split.py:270, gen_benchmark_split.py) -- without this alias the
             # benchmark stage cannot read the DB at all.
-            sub['perturbation'] = sub['label'].astype(str)
+            sub_all['perturbation'] = sub_all['label'].astype(str)
             # Scaled efficiency, computed by select.scale_efficiency over the SELECTED
             # population.  The old DB carried this as obs['efficiency']
             # (src/prepare.py:213-219); dropping it would silently lose the column.
             if eff_scaled is not None and eff_scaled.get(ds) is not None:
-                sub['efficiency'] = np.asarray(eff_scaled[ds])[mask]
-            if split:
-                obs_parts['ctrl'].append(sub[sub.is_ctrl.astype(bool)])
-                obs_parts['pert'].append(sub[~sub.is_ctrl.astype(bool)])
-            else:
-                obs_parts['pert'].append(sub)
+                sub_all['efficiency'] = np.asarray(eff_scaled[ds])
+            for key in keys:
+                obs_parts[key].append(sub_all[route[key]])
 
     var = pd.DataFrame(index=pd.Index(np.asarray(symbols, dtype=str)))
     for key, (f, dset, iset) in writers.items():

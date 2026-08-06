@@ -81,12 +81,38 @@ def get_dataset_hash(p: dict, vocab_version: str, d: int = 8) -> str:
     return hash(s, d)
 
 
-def get_recipe_hash(p: dict, dataset_indices: list[str], d: int = 8) -> str:
-    """Hash of the full configuration + dataset list: keys the materialised DB.
+# Parameters that determine the MATERIALISED DB, on top of the dataset list.  An
+# explicit allow-list, not a blacklist: with a blacklist any unrelated new config key
+# silently invalidates every existing DB and forces a ~6 h rebuild.  Membership here is
+# a deliberate choice.
+RECIPE_PARAM_KEYS = (
+    # gene axis
+    'n_hvg',
+    'var_merge',
+    # perturbation pool
+    'min_cells_per_class',
+    'min_dataset_frac',
+    'min_cells_per_perturbation',
+    # zero-shot output
+    'zs_min_cells_per_perturbation',
+    'zs_eval_cap',
+    # labels
+    'perturbation_col',
+    'ctrl_key',
+    'seed',
+)
 
-    Same semantics as get_param_hash; named separately so call sites read clearly.
+
+def get_recipe_hash(p: dict, dataset_indices: list[str], d: int = 8) -> str:
+    """Hash of the selection parameters + dataset list: keys the materialised DB.
+
+    Deliberately NOT get_param_hash: that hashes every non-blacklisted key, so adding
+    an unrelated setting to defaults.yaml would orphan the DB.
     """
-    return get_param_hash(p, dataset_indices, d=d)
+    items = {k: p.get(k) for k in RECIPE_PARAM_KEYS}
+    s = ';'.join(f'{k}:{items[k]}' for k in sorted(items))
+    s += 'datasets:' + ','.join(sorted(dataset_indices))
+    return hash(s, d)
 
 
 def save_config(c: dict, o: str):
@@ -142,8 +168,12 @@ def estimate_resources(file_p: str, resource_config: dict, factor: int = 2, job_
 def get_job_resources(resource_config: dict, job_name: str, partition_prio: str | None = None, **kwargs) -> dict[str, str]:
     # Check if there are resource specification for that job name
     if job_name not in resource_config['jobs']:
-        logging.warning(f'Could not find resource config for job {job_name}, falling back to defaults.')
-        return get_default_resources()
+        # NB: this used to call get_default_resources() with no arguments, which raises
+        # TypeError instead of falling back -- so a rule with no resources entry failed
+        # at DAG construction with an opaque error rather than using the defaults.
+        logging.warning(
+            f'No resource config for job {job_name!r}; falling back to defaults.')
+        return get_default_resources(resource_config)
     # Get resource configs for job from defaults.yaml with updates by user
     time: str = resource_config['jobs'][job_name]['time']
     mem: str = resource_config['jobs'][job_name]['mem']
@@ -294,6 +324,8 @@ def check_types(conf):
 def check_config(conf: dict):
     # validate config types
     check_types(conf)
-    # validate correction method
-    check_method(conf)
+    # Harmonisation is a legacy-only stage; the canonical-store pipeline has no
+    # correction_method, so only validate it when the key is actually present.
+    if 'correction_method' in conf:
+        check_method(conf)
     # add individual resource requirements
