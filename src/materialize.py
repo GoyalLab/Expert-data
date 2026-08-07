@@ -30,12 +30,20 @@ import pandas as pd
 DEFAULT_ROW_CHUNK = 20_000
 
 
-def _open_out(f, name, n_obs, n_genes, dtype, compression):
+def _copts(compression, level):
+    """gzip level as h5py kwargs.  Level only applies to gzip; lzf takes no options."""
+    if compression == 'gzip' and level is not None:
+        return {'compression': 'gzip', 'compression_opts': int(level)}
+    return {'compression': compression}
+
+
+def _open_out(f, name, n_obs, n_genes, dtype, compression, level=None):
     g = f.create_group('X')
+    kw = _copts(compression, level)
     data = g.create_dataset('data', shape=(0,), maxshape=(None,), dtype=dtype,
-                            chunks=(1_000_000,), compression=compression)
+                            chunks=(1_000_000,), **kw)
     ind = g.create_dataset('indices', shape=(0,), maxshape=(None,), dtype=np.int32,
-                           chunks=(1_000_000,), compression=compression)
+                           chunks=(1_000_000,), **kw)
     return g, data, ind
 
 
@@ -55,6 +63,7 @@ def materialize(
     out_zs: str | Path | None = None,
     dtype=np.int16,
     compression: str | None = 'gzip',
+    compression_level: int | None = 1,
     defer_compression: bool = False,
     row_chunk: int = DEFAULT_ROW_CHUNK,
     verbose: bool = True,
@@ -65,12 +74,22 @@ def materialize(
     ``h5repack -f GZIP=4`` pass over each, mirroring what the old pipeline's
     ``defer_compression`` flag does between merge and compress_database.
 
-    Measured on this filesystem: inline h5py gzip sustains **4.6 MB/s**, h5repack
-    **10.7 MB/s** -- 2.3x, because h5repack does chunk-level bulk copies instead of the
-    thousands of resize+write calls the streaming loop makes.  The gzip write is the
-    materialise bottleneck (blocks read at ~560 MB/s), so this is the single biggest
-    lever available; parallelising per dataset and concatenating is strictly WORSE,
-    since the concat re-writes the whole output serially anyway.
+    Where the time actually goes, profiled per phase on a real block
+    (``tests/profile_materialize.py``, ReplogleWeissman2022_rpe1, 200k cells):
+
+        read   8%   185 MB/s raw   -- never the bottleneck
+        route 55%    27 MB/s raw   -- the lexsort, since removed (6.9x, bit-identical)
+        write 37%    40 MB/s raw   -- gzip
+
+    So this is CPU-bound, not IO-bound: parallelising IO buys almost nothing, and neither
+    does splitting the outputs across processes (the perturbed file is 96% of the bytes).
+    ``defer_compression`` measured **0.85x** -- slower -- because the uncompressed
+    intermediate is ~3x larger and gets written *and* read back.  Per-dataset parallelism
+    plus concat is worse still, since the concat re-writes the whole output serially.
+
+    ``compression_level`` defaults to 1 rather than h5py's 4: level 1 compresses 1.55x
+    faster for a 2.6% larger file (78 -> 80 MB on a 229 MB sample).  Values are
+    unaffected -- gzip level is a property of the container, not the data.
     """
     import shutil
     import subprocess
@@ -100,21 +119,22 @@ def materialize(
         final['zs'] = str(out_zs)
     if defer_compression:
         compression = None
+        compression_level = None
         tmp_of = {k: f'{v.removesuffix(".h5ad")}.uncompressed.h5ad'
                   for k, v in final.items()}
     else:
         tmp_of = dict(final)
 
     f_pert = h5py.File(tmp_of['pert'], 'w')
-    writers['pert'] = (f_pert,) + _open_out(f_pert, 'pert', 0, n_genes, dtype, compression)[1:]
+    writers['pert'] = (f_pert,) + _open_out(f_pert, 'pert', 0, n_genes, dtype, compression, compression_level)[1:]
     indptr = {'pert': [0]}
     if split:
         f_ctrl = h5py.File(tmp_of['ctrl'], 'w')
-        writers['ctrl'] = (f_ctrl,) + _open_out(f_ctrl, 'ctrl', 0, n_genes, dtype, compression)[1:]
+        writers['ctrl'] = (f_ctrl,) + _open_out(f_ctrl, 'ctrl', 0, n_genes, dtype, compression, compression_level)[1:]
         indptr['ctrl'] = [0]
     if want_zs:
         f_zs = h5py.File(tmp_of['zs'], 'w')
-        writers['zs'] = (f_zs,) + _open_out(f_zs, 'zs', 0, n_genes, dtype, compression)[1:]
+        writers['zs'] = (f_zs,) + _open_out(f_zs, 'zs', 0, n_genes, dtype, compression, compression_level)[1:]
         indptr['zs'] = [0]
     write_ptr = {k: 0 for k in writers}
 
@@ -157,39 +177,53 @@ def materialize(
                 if b > a:
                     d = np.asarray(data[a:b])
                     idx = np.asarray(indices[a:b])
-                    row_of = np.repeat(np.arange(e - s, dtype=np.int64), lengths)
                     mapped = col_map_global[idx]
+                    # Selected output columns are ASCENDING in vocabulary order
+                    # (src/select.py:93 sorts col_idx, :112 preserves it), so
+                    # col_map_global is monotone over its valid entries.  Block rows are
+                    # CSR with ascending indices, therefore the kept entries of each row
+                    # come out already sorted -- no per-row sort is needed here.  This is
+                    # load-bearing: it was an O(nnz log nnz) lexsort per output.
+                    valid = mapped >= 0
+                    # per-row count of kept entries, via a prefix sum over row bounds --
+                    # cheaper than bincount(row_of[valid]) and avoids building row_of
+                    cv = np.empty(valid.size + 1, dtype=np.int64)
+                    cv[0] = 0
+                    np.cumsum(valid, out=cv[1:])
+                    bounds = src_indptr[s:e + 1] - a
+                    valid_len = cv[bounds[1:]] - cv[bounds[:-1]]
                 else:
                     d = np.zeros(0, dtype=dtype)
-                    idx = np.zeros(0, dtype=np.int64)
-                    row_of = np.zeros(0, dtype=np.int64)
                     mapped = np.zeros(0, dtype=np.int32)
+                    valid = np.zeros(0, dtype=bool)
+                    valid_len = np.zeros(e - s, dtype=np.int64)
 
                 for key in keys:
                     sel_rows = route[key][s:e]
                     n_keep = int(sel_rows.sum())
                     if n_keep == 0:
                         continue
-                    keep = (mapped >= 0) & sel_rows[row_of] if d.size else \
-                        np.zeros(0, dtype=bool)
-                    dd = d[keep]
-                    mm = mapped[keep]
-                    rr = row_of[keep]
-                    local = (np.cumsum(sel_rows) - 1)[rr] if dd.size else \
-                        np.zeros(0, dtype=np.int64)
-                    row_nnz = np.bincount(local, minlength=n_keep) if dd.size else \
-                        np.zeros(n_keep, dtype=np.int64)
+                    row_nnz = valid_len[sel_rows]
                     base = indptr[key][-1]
                     indptr[key].extend((base + np.cumsum(row_nnz)).tolist())
 
+                    if d.size:
+                        # np.repeat over the row lengths beats sel_rows[row_of]: it is a
+                        # sequential fill instead of a random gather over nnz elements.
+                        keep = valid & np.repeat(sel_rows, lengths)
+                        dd = d[keep]
+                        mm = mapped[keep]
+                    else:
+                        dd = np.zeros(0, dtype=dtype)
+                        mm = np.zeros(0, dtype=np.int32)
+
                     if dd.size:
-                        order = np.lexsort((mm, local))
                         _, dset, iset = writers[key]
                         w = write_ptr[key]
                         dset.resize(w + dd.size, axis=0)
                         iset.resize(w + dd.size, axis=0)
-                        dset[w:w + dd.size] = dd[order].astype(dtype)
-                        iset[w:w + dd.size] = mm[order].astype(np.int32)
+                        dset[w:w + dd.size] = dd.astype(dtype)
+                        iset[w:w + dd.size] = mm.astype(np.int32)
                         write_ptr[key] = w + dd.size
 
             assert len(obs) == n_obs, (
@@ -218,7 +252,7 @@ def materialize(
     for key, (f, dset, iset) in writers.items():
         obs_all = pd.concat(obs_parts[key], axis=0) if obs_parts[key] else pd.DataFrame()
         ip = np.asarray(indptr[key], dtype=np.int64)
-        f['X'].create_dataset('indptr', data=ip, compression=compression)
+        f['X'].create_dataset('indptr', data=ip, **_copts(compression, compression_level))
         f['X'].attrs['encoding-type'] = 'csr_matrix'
         f['X'].attrs['encoding-version'] = '0.1.0'
         f['X'].attrs['shape'] = [len(obs_all), n_genes]

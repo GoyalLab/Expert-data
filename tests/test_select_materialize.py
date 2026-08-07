@@ -52,6 +52,8 @@ def main() -> None:
     ap.add_argument('--datasheet', default='resources/datasets/meta/training.csv')
     ap.add_argument('--n-hvg', type=int, default=3000)
     ap.add_argument('--n-sample-rows', type=int, default=300)
+    ap.add_argument('--datasets', nargs='+', default=None,
+                    help='restrict to these blocks (default: every complete block)')
     ap.add_argument('--raw-dir',
                     default='/projects/b1042/GoyalLab/lschwartz/dl/perturb-seq/data/raw')
     args = ap.parse_args()
@@ -64,6 +66,12 @@ def main() -> None:
     # stats in pass 3, so a cells/*.h5ad can exist while its sidecars do not.  The
     # summary is written last and is the only safe completion marker.
     datasets = sorted(p.stem for p in (store / 'summary').glob('*.json'))
+    if args.datasets:
+        want = set(args.datasets)
+        missing = want - set(datasets)
+        if missing:
+            print(f'not complete in the store: {sorted(missing)}'); sys.exit(1)
+        datasets = [d for d in datasets if d in want]
     n_blocks = len(list((store / 'cells').glob('*.h5ad')))
     print(f'store={store}')
     print(f'  {n_blocks} blocks on disk, {len(datasets)} COMPLETE: {datasets}')
