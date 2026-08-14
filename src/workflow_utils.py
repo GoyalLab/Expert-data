@@ -89,6 +89,8 @@ RECIPE_PARAM_KEYS = (
     # gene axis
     'n_hvg',
     'var_merge',
+    'gene_selection',
+    'n_genes_per_dataset',
     # perturbation pool
     'min_cells_per_class',
     'min_dataset_frac',
@@ -110,6 +112,18 @@ def get_recipe_hash(p: dict, dataset_indices: list[str], d: int = 8) -> str:
     an unrelated setting to defaults.yaml would orphan the DB.
     """
     items = {k: p.get(k) for k in RECIPE_PARAM_KEYS}
+
+    # A parameter that cannot affect the output must not move the hash, or every DB is
+    # orphaned the moment an alternative selection mode is added.  Two consequences:
+    #   * the keys of the mode NOT in use are inert, so they drop out;
+    #   * 'hvg' is the historical behaviour, and hashing it as absent keeps every DB
+    #     built before gene_selection existed reachable from its own config.
+    mode = items.get('gene_selection') or 'hvg'
+    inert = ({'n_genes_per_dataset'} if mode == 'hvg' else {'n_hvg', 'var_merge'})
+    if mode == 'hvg':
+        inert.add('gene_selection')
+    items = {k: v for k, v in items.items() if k not in inert}
+
     s = ';'.join(f'{k}:{items[k]}' for k in sorted(items))
     s += 'datasets:' + ','.join(sorted(dataset_indices))
     return hash(s, d)
@@ -122,13 +136,24 @@ def save_config(c: dict, o: str):
         yaml.dump(c, f, default_flow_style=False)
 
 def get_default_resources(resource_config: dict, default_key: str = 'default') -> dict[str, str]:
+    # `time` has no top-level block in any shipped config, so indexing it raised
+    # KeyError and every rule WITHOUT a jobs: entry died at DAG construction -- or, worse,
+    # got a 1 GB fallback from the scheduler.  Default explicitly instead.
     o = {
-        'time': resource_config['time'][default_key],
-        'mem': resource_config['memory'][default_key],
+        'time': str(resource_config.get('time', {}).get(default_key, '3:30:00')),
+        'mem': f"{resource_config['memory'][default_key]}GB"
+               if not str(resource_config['memory'][default_key]).endswith('GB')
+               else str(resource_config['memory'][default_key]),
     }
     partition = resource_config['partitions'][default_key]
     if partition != '':
         o['partition'] = partition
+    # Account must travel with the partition: the buyin `genomics` queue and the general
+    # `short`/`normal` queues bill to different accounts, so setting one without the
+    # other gets the job rejected.
+    account = resource_config.get('account')
+    if account:
+        o['account'] = account
     return o
 
 # With optional job name to lookup local configs
@@ -195,6 +220,9 @@ def get_job_resources(resource_config: dict, job_name: str, partition_prio: str 
     o = {'time': time, 'mem': mem}
     if partition != '':
         o['partition'] = partition
+    account = resource_config.get('account')
+    if account:
+        o['account'] = account
     if threads is not None:
         o['threads'] = threads
     # Add any extra options to resources

@@ -119,6 +119,83 @@ def select_columns(
             'n_before_dedup': int(len(df)), 'n_dropped_dedup': int(n_dropped)}
 
 
+def select_columns_fstat(
+    store: str | Path,
+    datasets: list[str],
+    vocab: pd.DataFrame,
+    n_genes_per_dataset: int = 500,
+) -> dict:
+    """Gene axis from per-dataset perturbation SEPARABILITY, with per-dataset membership.
+
+    Differs from ``select_columns`` in two ways that matter downstream:
+
+      * genes are ranked by how well they discriminate perturbations from each other
+        (``fstat/{dataset}.parquet``), not by unsupervised variance;
+      * the per-dataset membership is returned, because each dataset is ZERO-PADDED
+        outside its own top-n.  Keeping the other datasets' genes measurably hurts --
+        every one of 21 datasets scored worse, mean -10% relative (progress.md), so the
+        union is the DB's column axis but not every dataset's content.
+
+    Returns ``col_idx`` (ascending vocabulary positions), ``symbols``, and
+    ``col_masks``: per dataset, a boolean over ``col_idx`` marking its own selection.
+    """
+    store = Path(store)
+    datasets = sorted(datasets)
+    sel = {}
+    for ds in datasets:
+        f = store / 'fstat' / f'{ds}.parquet'
+        if not f.exists():
+            raise FileNotFoundError(
+                f'{f} missing -- gene_selection=fstat needs the gene_fstat rule to have '
+                f'run for every dataset (it depends on pseudobulk/).')
+        t = pd.read_parquet(f)
+        score = np.where(t['measured'].to_numpy(),
+                         t['f_stat'].to_numpy().astype(np.float64), -np.inf)
+        sel[ds] = np.argsort(-score)[:n_genes_per_dataset]
+        logging.info(f'  {ds}: top {len(sel[ds]):,} of '
+                     f'{int(t["measured"].sum()):,} measured')
+
+    col_idx = np.unique(np.concatenate([sel[d] for d in datasets]))
+    symbols = vocab['symbol'].to_numpy().astype(str)[col_idx]
+
+    # Ensembl -> symbol dedup, matching select_columns: the DB is symbol-keyed, and two
+    # Ensembl IDs sharing a symbol would otherwise become two ~80%-empty columns.
+    # Rank by breadth then mean F so the retained ID is the better-supported one.
+    pos = {int(c): i for i, c in enumerate(col_idx)}
+    breadth = np.zeros(len(col_idx), dtype=np.int64)
+    fsum = np.zeros(len(col_idx))
+    for ds in datasets:
+        t = pd.read_parquet(store / 'fstat' / f'{ds}.parquet')
+        fv = t['f_stat'].to_numpy().astype(np.float64)
+        for g in sel[ds]:
+            breadth[pos[int(g)]] += 1
+            fsum[pos[int(g)]] += fv[g]
+    df = pd.DataFrame({'col': col_idx, 'symbol': symbols,
+                       'score': breadth + fsum / max(len(datasets), 1) * 1e-6})
+    keep = df.groupby('symbol', observed=True)['score'].idxmax().to_numpy()
+    keep_df = df.loc[np.sort(keep)].reset_index(drop=True)
+    n_dropped = len(df) - len(keep_df)
+    if n_dropped:
+        logging.info(f'symbol dedup: dropped {n_dropped} column(s) whose symbol was '
+                     f'claimed by a better-supported Ensembl ID')
+    col_idx = keep_df['col'].to_numpy().astype(np.int64)
+
+    # per-dataset membership over the FINAL col_idx -- this is what zero-pads
+    pos = {int(c): i for i, c in enumerate(col_idx)}
+    col_masks = {}
+    for ds in datasets:
+        m = np.zeros(len(col_idx), dtype=bool)
+        m[[pos[int(g)] for g in sel[ds] if int(g) in pos]] = True
+        col_masks[ds] = m
+    logging.info(f'columns: {len(col_idx):,} (union of {len(datasets)} x top-'
+                 f'{n_genes_per_dataset}); zero-padded density '
+                 f'{np.mean([m.mean() for m in col_masks.values()]):.1%}')
+    return {'col_idx': col_idx,
+            'symbols': keep_df['symbol'].to_numpy().astype(str),
+            'col_masks': col_masks,
+            'n_before_dedup': int(len(df)), 'n_dropped_dedup': int(n_dropped)}
+
+
 def build_feature_mask(
     datasets: list[str],
     col_idx: np.ndarray,
@@ -321,6 +398,8 @@ def build_recipe(
     broad_keys: dict[str, str],
     n_hvg: int = 3000,
     var_merge: str = 'union',
+    gene_selection: str = 'hvg',
+    n_genes_per_dataset: int = 500,
     min_cells_per_class: int = 20,
     min_dataset_frac: float = 0.6,
     min_cells_per_perturbation: int = 50,
@@ -346,7 +425,15 @@ def build_recipe(
 
     sidecars = {ds: load_sidecars(store, ds) for ds in datasets}
 
-    cols = select_columns(sidecars, vocab, n_hvg=n_hvg, var_merge=var_merge)
+    if gene_selection == 'fstat':
+        cols = select_columns_fstat(store, list(datasets), vocab,
+                                    n_genes_per_dataset=n_genes_per_dataset)
+    elif gene_selection == 'hvg':
+        cols = select_columns(sidecars, vocab, n_hvg=n_hvg, var_merge=var_merge)
+    else:
+        raise ValueError(f"gene_selection must be 'hvg' or 'fstat', got "
+                         f'{gene_selection!r}')
+    col_masks = cols.get('col_masks')
     pool = build_pool(sidecars, broad_keys,
                       min_cells_per_class=min_cells_per_class,
                       min_dataset_frac=min_dataset_frac)
@@ -360,6 +447,12 @@ def build_recipe(
     if raw_dir is not None:
         feature_mask, ds_to_idx = build_feature_mask(
             list(datasets), cols['col_idx'], vocab, raw_dir)
+        if col_masks is not None:
+            # Under zero-padding a dataset carries values ONLY for its own selection, so
+            # the mask has to mark the DESELECTED genes inactive too.  Leaving it at
+            # "measured" would tell downstream that those zeros are real measurements.
+            for ds, j in ds_to_idx.items():
+                feature_mask[:, j] *= col_masks[ds].astype(feature_mask.dtype)
 
     total = int(sum(int(m.sum()) for m in masks.values()))
     recipe = {
@@ -368,13 +461,18 @@ def build_recipe(
         'n_cells': total,
         'params': {
             'n_hvg': n_hvg, 'var_merge': var_merge,
+            'gene_selection': gene_selection,
+            'n_genes_per_dataset': n_genes_per_dataset,
             'min_cells_per_class': min_cells_per_class,
             'min_dataset_frac': min_dataset_frac,
             'min_cells_per_perturbation': min_cells_per_perturbation,
             'zs_eval_cap': zs_eval_cap, 'seed': seed,
         },
         'columns': {'n_before_dedup': cols['n_before_dedup'],
-                    'n_dropped_dedup': cols['n_dropped_dedup']},
+                    'n_dropped_dedup': cols['n_dropped_dedup'],
+                    **({'zero_padded_density':
+                        float(np.mean([m.mean() for m in col_masks.values()]))}
+                       if col_masks is not None else {})},
         'pool_size': len(pool),
         'n_cells_zero_shot': int(sum(int(m.sum()) for m in zs_masks.values())),
         'per_dataset': {ds: {'n_rows_block': int(len(m)),
@@ -382,6 +480,7 @@ def build_recipe(
                         for ds, m in masks.items()},
     }
     return {'recipe': recipe, 'col_idx': cols['col_idx'], 'symbols': cols['symbols'],
+            'col_masks': col_masks,
             'masks': masks, 'pool': pool, 'sidecars': sidecars,
             'eff_scaled': eff_scaled, 'feature_mask': feature_mask,
             'dataset_to_mask_idx': ds_to_idx, 'zs_masks': zs_masks}
@@ -396,6 +495,9 @@ def save_recipe(sel: dict, path: str | Path) -> None:
         'symbols': np.asarray(sel['symbols'], dtype='U'),
         **{f'mask__{ds}': m for ds, m in sel['masks'].items()},
         **{f'zs__{ds}': m for ds, m in sel.get('zs_masks', {}).items()},
+        # per-dataset column membership -- what materialize zero-pads with
+        **{f'colmask__{ds}': m
+           for ds, m in (sel.get('col_masks') or {}).items()},
     }
     # The feature mask is derived from the raw /var files, so persisting it here means
     # materialize does not have to re-read 22 raw headers.

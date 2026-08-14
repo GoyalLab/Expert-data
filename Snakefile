@@ -13,6 +13,7 @@ include: "workflow/rules/common.smk"
 include: "workflow/rules/download.smk"
 include: "workflow/rules/store.smk"
 include: "workflow/rules/efficiency.smk"
+include: "workflow/rules/pseudobulk.smk"
 include: "workflow/rules/materialize.smk"
 include: "workflow/rules/splits.smk"
 

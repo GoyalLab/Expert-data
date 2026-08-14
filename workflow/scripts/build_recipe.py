@@ -30,7 +30,8 @@ def broad_key(sheet, ds):
 
 def main(store_dir, datasets, datasheet, raw_dir, vocab_path, n_hvg, var_merge,
          min_cells_per_class, min_dataset_frac, min_cells_per_perturbation,
-         zs_eval_cap, seed, out_recipe):
+         zs_eval_cap, seed, out_recipe, gene_selection='hvg',
+         n_genes_per_dataset=500):
     import pandas as pd
 
     from src.select import build_recipe, save_recipe
@@ -43,6 +44,7 @@ def main(store_dir, datasets, datasheet, raw_dir, vocab_path, n_hvg, var_merge,
     sel = build_recipe(
         store_dir, list(datasets), vocab, keys,
         n_hvg=n_hvg, var_merge=var_merge,
+        gene_selection=gene_selection, n_genes_per_dataset=n_genes_per_dataset,
         min_cells_per_class=min_cells_per_class,
         min_dataset_frac=min_dataset_frac,
         min_cells_per_perturbation=min_cells_per_perturbation,
@@ -55,6 +57,8 @@ if __name__ == '__main__':
     try:
         setup_logger(snakemake.log[0])
         main(
+            gene_selection=snakemake.params.gene_selection,
+            n_genes_per_dataset=snakemake.params.n_genes_per_dataset,
             store_dir=snakemake.params.store_dir,
             datasets=snakemake.params.datasets,
             datasheet=snakemake.params.datasheet,

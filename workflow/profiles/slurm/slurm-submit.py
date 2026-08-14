@@ -43,6 +43,7 @@ RESOURCE_MAPPING = {
     "mem-per-cpu": ("mem-per-cpu", "mem_per_cpu", "mem_per_thread"),
     "nodes": ("nodes", "nnodes"),
     "partition": ("partition", "queue"),
+    "account": ("account", "slurm_account"),
     "cpus-per-task": ("threads", "cpus-per-task", "cpus_per_task"),
     "gres": ("gres", "gpu"),
     "output": ("output", "out", "log", "error"),

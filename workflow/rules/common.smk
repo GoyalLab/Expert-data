@@ -63,6 +63,24 @@ DB_CTRL = os.path.join(OUTPUT_DIR, 'database_ctrl.h5ad')
 # depth (12.1M cells -> ~1.0M, ~5 GB).
 DB_ZS = os.path.join(OUTPUT_DIR, 'database_perturbed_zs.h5ad')
 OOD_SPLIT_DIR = os.path.join(OUTPUT_DIR, 'splits')
+# uncompressed per-dataset materialize parts; temp() removes them on success
+PART_DIR = os.path.join(OUTPUT_DIR, 'parts')
+
+# --- pseudobulks (DATASET_HASH-keyed, but in NEITHER hash's allow-list) ---
+PB_DIR = os.path.join(STORE_DIR, 'pseudobulk')
+PB_VARIANTS = list(config.get('pseudobulk_variants', ['rep', 'meta', 'rep_eff']))
+PB_N_REP = int(config.get('n_rep', 2))
+PB_MIN_CELLS_PER_REP = int(config.get('min_cells_per_rep', 10))
+PB_K_MAX = int(config.get('meta_k_max', 4))
+PB_MIN_CELLS_PER_META = int(config.get('min_cells_per_meta', 20))
+PB_SEP_THRESHOLD = float(config.get('meta_sep_threshold', 2.0))
+# Only the random equipartition gives exchangeable replicates, so separability is
+# measured on it -- `meta` clusters are deliberately different and would understate it.
+PB_FSTAT_VARIANT = str(config.get('fstat_variant', 'rep'))
+
+# --- gene selection (RECIPE hash) ---
+GENE_SELECTION = str(config.get('gene_selection', 'hvg'))
+N_GENES_PER_DATASET = int(config.get('n_genes_per_dataset', 500))
 
 N_EFF_BATCHES = int(config.get('n_eff_batches', 16))
 EFF_BATCH_IDS = list(range(N_EFF_BATCHES))

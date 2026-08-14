@@ -30,7 +30,17 @@ n_hvg: 3000                      # seurat_v3, per dataset
 ## Efficiency (Phase 3)
 min_deg: 5                       # perturbations below this get no score (NaN)
 n_pcs: 40                        # PCA fit on CONTROLS, everything else projected
-n_eff_batches: 16                # fan-out width; fixed so the DAG is static
+n_eff_batches: 16
+
+# --- perturbation pseudobulks ---------------------------------------------------
+# In NEITHER hash's allow-list: a derived per-dataset artifact that no block and no
+# materialised DB depends on, so these can change without invalidating anything.
+pseudobulk_variants: [rep, meta, rep_eff]
+n_rep: 2                   # random replicates per perturbation; >=2 to measure anything
+min_cells_per_rep: 10      # below n_rep*this, emit one unsplit row instead
+meta_k_max: 4              # ceiling on clustered meta-cells per perturbation
+min_cells_per_meta: 20
+meta_sep_threshold: 2.0    # k grows while kmeans BSS >= this x a random-split null                # fan-out width; fixed so the DAG is static
 
 ## Selection -> materialised DB                              [RECIPE hash]
 var_merge: 'union'               # union | intersection of per-dataset top-n_hvg
