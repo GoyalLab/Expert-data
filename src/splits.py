@@ -37,6 +37,25 @@ import pandas as pd
 AXIS_PREFIX = 'ood_'
 
 
+def dataset_contexts(sheet: pd.DataFrame) -> dict[str, str]:
+    """dataset -> biological cell context: `ood_cell_line`, else `<cell type> (primary)`.
+
+    Primary-cell datasets carry a donor/condition axis instead of a cell line, so they
+    fall back to their cell type -- all Marson datasets map to one context.
+    """
+    out: dict[str, str] = {}
+    for ds, row in sheet.iterrows():
+        cl = row.get(f'{AXIS_PREFIX}cell_line')
+        if not pd.isna(cl) and str(cl).strip():
+            out[str(ds)] = str(cl).strip()
+            continue
+        ct = row.get('cell type')
+        base = str(ct).strip() if not pd.isna(ct) else 'unknown'
+        primary = str(row.get('tissue type', '')).strip() == 'primary'
+        out[str(ds)] = f'{base} (primary)' if primary else base
+    return out
+
+
 def discover_axes(sheet: pd.DataFrame) -> dict[str, dict[str, list[str]]]:
     """{axis: {value: [datasets]}} from every ``ood_*`` column present."""
     axes: dict[str, dict[str, list[str]]] = {}
@@ -54,18 +73,66 @@ def discover_axes(sheet: pd.DataFrame) -> dict[str, dict[str, list[str]]]:
     return axes
 
 
+def folds_from_spec(
+    spec: list[dict],
+    cells: dict[str, int],
+    max_ood_frac: float = 0.35,
+) -> list[dict]:
+    """Re-materialise CANONICAL folds against this DB's cell counts.
+
+    `spec` is a previously written fold list (the `folds` array of a metadata.json,
+    or the return of build_folds). Only the held-out DATASETS and their ORDER are
+    taken from it; n_cells/frac are recomputed here. A fold over max_ood_frac is
+    WARNED about but kept -- dropping it would renumber the folds for this subset
+    only, which is exactly the divergence this path exists to prevent.
+    """
+    total = sum(cells.values()) or 1
+    out: list[dict] = []
+    for i, f in enumerate(spec):
+        hold = sorted(f.get('datasets') or f.get('held_out_datasets') or [])
+        missing = [d for d in hold if d not in cells]
+        if missing:
+            logging.warning(f'fold {i} {f.get("held_out")}: {len(missing)} held-out dataset(s) '
+                            f'absent from this DB ({", ".join(missing[:4])}) -- kept, but its OOD '
+                            f'set is smaller here')
+        n = sum(cells.get(d, 0) for d in hold)
+        if n / total > max_ood_frac:
+            logging.warning(f'fold {i} {f.get("held_out")}: holds out {n:,} cells '
+                            f'({n/total:.1%}) > max_ood_frac={max_ood_frac:.0%} in this subset '
+                            f'-- KEPT anyway to stay aligned with the canonical folds')
+        out.append({'held_out': f.get('held_out', {}), 'datasets': hold,
+                    'n_cells': n, 'frac': n / total})
+    return out
+
+
 def build_folds(
     sheet: pd.DataFrame,
     cells: dict[str, int],
     axes_order: list[str] | None = None,
     pair: dict[str, str] | None = None,
     max_ood_frac: float = 0.35,
+    spec: list[dict] | None = None,
 ) -> list[dict]:
     """Enumerate folds from the declared axes.
 
     ``pair={'donor': 'cell_line'}`` makes each donor fold additionally hold out one
     cell line, consuming it from the cell_line axis so it is not held out twice.
+
+    ``spec`` short-circuits the enumeration and reuses canonical folds instead.
+    THIS IS WHY IT EXISTS: the pairing below sorts both axes by SIZE, and `size()`
+    counts cells in the DB being split -- so a perturbation subset, which changes
+    every dataset's cell count, re-derives a DIFFERENT donor<->cell_line pairing and
+    a different fold ORDER than the full DB. That silently broke the guarantee in
+    splits.smk's docstring ("the same fold definition applies to the full DB and to
+    any perturbation subset"): on store 1e6bafc04836e06a, full fold_3 held out
+    D1+TeloHAEC while the 200-subset's fold_3 held out D1+HCT116, and only 5 of 12
+    folds matched by number. Callers should pass the full DB's folds as `spec` for
+    every subset (see workflow/scripts/gen_ood_splits.py).
     """
+    if spec is not None:
+        logging.info(f'using {len(spec)} canonical folds from the fold spec '
+                     '(pairing NOT re-derived from this DB\'s cell counts)')
+        return folds_from_spec(spec, cells, max_ood_frac=max_ood_frac)
     axes = discover_axes(sheet)
     axes_order = axes_order or sorted(axes)
     pair = pair or {}

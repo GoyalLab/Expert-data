@@ -11,6 +11,7 @@ from __future__ import annotations
 import argparse
 import json
 import logging
+import os
 import sys
 from pathlib import Path
 
@@ -24,7 +25,7 @@ from src.vocab import (  # noqa: E402
     build_vocabulary, load_vocabulary, save_vocabulary,
 )
 
-RAW_DIR = Path('/projects/b1042/GoyalLab/lschwartz/dl/perturb-seq/data/raw')
+RAW_DIR = Path(os.path.join(os.environ.get('EXPERT_CACHE_DIR', 'data/cache'), 'raw'))
 DEFAULT_OUT = REPO_ROOT / 'resources' / 'vocab' / 'genes_v1.tsv'
 DEFAULT_SHEET = REPO_ROOT / 'resources' / 'datasets' / 'meta' / 'training.csv'
 

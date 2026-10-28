@@ -1,0 +1,133 @@
+# Canonical-store config: drives the Phase 2-4 rules over the 22-dataset store.
+#
+# The per-dataset params here MUST hash to the same DATASET_HASH as the store that was
+# already built (27dab279946b4ea6), or the rules will point at an empty directory.
+# Those params are exactly: qc, n_ctrl, seed, single_perturbations_only,
+# perturbation_col, ctrl_key, n_hvg  (see src/workflow_utils.DATASET_PARAM_KEYS).
+# Everything else -- the dataset list, pool thresholds, merge/benchmark settings --
+# lives in the RECIPE hash and cannot invalidate a block.
+
+datasheet: 'resources/datasets/meta/training.csv'
+output_dir: '${EXPERT_OUTPUT_DIR:-data/store_out}'
+cache_dir: '${EXPERT_CACHE_DIR:-data/cache}'
+store_dir: '${EXPERT_STORE_DIR:-data/store}'
+
+# --- must match the built store's dataset hash ---
+n_ctrl: 10000
+
+# --- selection-time params (recipe hash only) ---
+min_cells_per_perturbation: 50
+min_cells_per_class: 10
+n_eff_batches: 16
+
+# --- perturbation pseudobulks ---------------------------------------------------
+# In NEITHER hash's allow-list: a derived per-dataset artifact that no block and no
+# materialised DB depends on, so these can change without invalidating anything.
+pseudobulk_variants: [rep, meta, rep_eff]
+n_rep: 2                   # random replicates per perturbation; >=2 to measure anything
+min_cells_per_rep: 10      # below n_rep*this, emit one unsplit row instead
+meta_k_max: 4              # ceiling on clustered meta-cells per perturbation
+min_cells_per_meta: 20
+meta_sep_threshold: 2.0    # k grows while kmeans BSS >= this x a random-split null
+fstat_variant: rep         # separability is only valid on exchangeable replicates
+
+# --- gene selection ------------------------------------------------------------
+# 'hvg'   union of per-dataset seurat_v3 top-n_hvg, every dataset carrying every
+#         union gene it measured            (the original behaviour)
+# 'fstat' union of per-dataset top-n_genes_per_dataset by perturbation separability,
+#         each dataset ZERO-PADDED outside its own selection.  Measured +42% top-1
+#         replicate matching on a 5x smaller axis -- see progress.md.
+gene_selection: fstat
+n_genes_per_dataset: 500
+# false = X keeps every union gene the dataset measured; the panel is carried in
+# varm/panel_membership_per_dataset for masking at TRAIN time only.  Baking it in
+# would put label-derived structure in the input that inference cannot reproduce.
+zero_pad_selection: false
+defer_compression: true
+
+# --- OOD benchmark folds (datasheet-driven) ---
+# Any `ood_<axis>` column in the datasheet declares a holdout axis; each distinct value
+# becomes one fold.  `pair` lets donor folds also hold out a cell line so they are not
+# trivially small.  eval_cap bounds val/test per (dataset x perturbation) group, with
+# NO perturbation cap, so every perturbation is represented and no dataset dominates.
+benchmark_axes: [donor, cell_line, condition]
+benchmark_pair: {donor: cell_line}
+benchmark_max_ood_frac: 0.35
+benchmark_eval_cap: 10
+# Perturbation-subset DB variants (full is always built):
+#   sizes         nested quota+random subsets, variant name = the size  (splits/200)
+#   min_contexts  perturbations measured in >= k of the cell contexts   (splits/ctx6)
+benchmark_subset_sizes: [200]
+benchmark_subset_min_contexts: [6, 7]
+
+# ood_test cells per (dataset x perturbation) group. 0 = uncapped (every cell of the
+# held-out datasets), which is what the 200-tier used and which leaves ood_test with the
+# natural class imbalance -- max/median cells per class is 14x at 200 perturbations and
+# 33x at ctx7. recall@k over that distribution rewards concentrating predictions on
+# frequent classes: on fold_0, xgboost scores 2.7x and linreg 1.9x higher on the natural
+# distribution than on a balanced one, while ExPert (1.19x) barely moves. Capping brings
+# the imbalance to ~2x. 10 matches the per-group density id_test already has (eval_cap
+# draws 2*cap and halves it into val/test), so the two readouts become like-for-like.
+benchmark_ood_cap: 10
+subset_compression: null
+zs_min_cells_per_perturbation: 0     # 0 = no minimum
+zs_eval_cap: 10                      # <=N cells per (dataset x perturbation);
+                                     # ZS is an EVAL set -- breadth over depth
+
+resources:
+  memory:
+    min_mem: 50
+    default: 200
+    max_mem: 220
+  # `short` (4 h wall) has ~350 nodes vs a swamped `genomics`; every rule here
+  # finishes well inside 4 h, so it schedules far faster.
+  # Slurm account: leave empty and set SBATCH_ACCOUNT in the environment instead
+  account: '${SLURM_ACCOUNT:-}'
+  partitions:
+    default: 'short'
+    high_mem: 'normal'
+    gpu: 'gengpu'
+  jobs:
+    canonicalize:
+      time: '3:30:00'
+      mem: '32GB'      # measured max across all 22 was 12.5 GB
+    # Right-sized from 286 measured batches (first full run):
+    #   fit     mean 22.2 min, max RSS  7.73 GB  (was 32 GB -> 4.1x waste)
+    #   batch   mean  9.9 min, max RSS 10.36 GB  (was 24 GB -> 2.3x waste)
+    #   gather  mean  0.8 min, max RSS  1.67 GB  (was 16 GB -> 9.6x waste)
+    # Memory scales linearly with cells/batch (corr 0.950), so the batch ceiling is set
+    # by XAtlas2025_HEK293T at ~247k cells/batch.  Smaller requests schedule faster on a
+    # busy cluster, which matters more than the headroom here.
+    materialize:
+      time: '3:30:00'
+      mem: '64GB'
+    build_recipe:
+      time: '2:00:00'
+      mem: '32GB'
+    subset_db:
+      time: '3:30:00'
+      mem: '48GB'
+    gen_ood_splits:
+      time: '2:00:00'
+      mem: '48GB'
+    materialize_part:
+      time: '3:30:00'
+      mem: '48GB'
+    assemble_archive:
+      time: '8:00:00'
+      mem: '64GB'
+    gene_fstat:
+      time: '2:00:00'
+      mem: '48GB'
+    pseudobulk:
+      time: '3:30:00'
+      mem: '128GB'     # XAtlas: ~109k groups x 38,638 x 8 B = 34 GB acc + 17 GB out
+    efficiency_fit:
+      time: '3:30:00'
+      mem: '16GB'
+    efficiency_batch:
+      time: '3:30:00'
+      mem: '16GB'
+    efficiency_gather:
+      time: '2:00:00'
+      mem: '4GB'

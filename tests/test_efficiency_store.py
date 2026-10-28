@@ -33,6 +33,8 @@ REPO_ROOT = Path(__file__).resolve().parent.parent
 if str(REPO_ROOT) not in sys.path:
     sys.path.insert(0, str(REPO_ROOT))
 
+from _requires import requires  # noqa: E402
+
 warnings.filterwarnings('ignore')
 
 from src.efficiency_store import (  # noqa: E402
@@ -57,6 +59,7 @@ def main() -> None:
     ap.add_argument('--max-perts', type=int, default=40,
                     help='cap the perturbations scored, to keep the test quick')
     args = ap.parse_args()
+    requires(args.block, args.stats, args.obs, what='a canonical block + its sidecars')
 
     logging.basicConfig(level=logging.INFO, format='%(levelname)s %(message)s')
 

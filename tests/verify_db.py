@@ -1,8 +1,15 @@
 """Integrity check for a materialised DB: row order, zero-padding, feature mask."""
 import sys
+from pathlib import Path
 import h5py, numpy as np
 
+if len(sys.argv) < 2:
+    raise SystemExit(f'usage: {sys.argv[0]} <materialised DB dir>')
 O = sys.argv[1]
+
+sys.path.insert(0, str(Path(__file__).resolve().parent))
+from _requires import requires  # noqa: E402
+requires(O + '/recipe.npz', what='a materialised DB')
 z = np.load(O + '/recipe.npz', allow_pickle=False)
 cm = {k[len('colmask__'):]: z[k] for k in z.files if k.startswith('colmask__')}
 

@@ -13,6 +13,7 @@ from __future__ import annotations
 
 import argparse
 import logging
+import os
 import sys
 from pathlib import Path
 
@@ -22,6 +23,8 @@ import pandas as pd
 REPO_ROOT = Path(__file__).resolve().parent.parent
 if str(REPO_ROOT) not in sys.path:
     sys.path.insert(0, str(REPO_ROOT))
+
+from _requires import requires  # noqa: E402
 
 from src.materialize import materialize  # noqa: E402
 from src.select import build_recipe, save_recipe  # noqa: E402
@@ -55,8 +58,9 @@ def main() -> None:
     ap.add_argument('--datasets', nargs='+', default=None,
                     help='restrict to these blocks (default: every complete block)')
     ap.add_argument('--raw-dir',
-                    default='/projects/b1042/GoyalLab/lschwartz/dl/perturb-seq/data/raw')
+                    default=os.path.join(os.environ.get('EXPERT_CACHE_DIR', 'data/cache'), 'raw'))
     args = ap.parse_args()
+    requires(args.store, args.datasheet, what='a canonical store')
 
     logging.basicConfig(level=logging.INFO, format='%(levelname)s %(message)s')
     store = Path(args.store)

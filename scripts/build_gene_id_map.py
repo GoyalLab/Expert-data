@@ -36,6 +36,7 @@ from __future__ import annotations
 import argparse
 import json
 import logging
+import os
 import sys
 from collections import defaultdict
 from pathlib import Path
@@ -49,7 +50,7 @@ if str(REPO_ROOT) not in sys.path:
 
 from src.vocab import _is_ens, _read_var  # noqa: E402
 
-RAW_DIR = Path('/projects/b1042/GoyalLab/lschwartz/dl/perturb-seq/data/raw')
+RAW_DIR = Path(os.path.join(os.environ.get('EXPERT_CACHE_DIR', 'data/cache'), 'raw'))
 DEFAULT_OUT = REPO_ROOT / 'resources' / 'vocab' / 'gene_id_map.tsv'
 DEFAULT_SHEET = REPO_ROOT / 'resources' / 'datasets' / 'meta' / 'training.csv'
 

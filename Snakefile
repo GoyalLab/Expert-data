@@ -24,7 +24,7 @@ rule all:
         DB_CTRL,
         DB_ZS,
         expand(os.path.join(OOD_SPLIT_DIR, "{variant}", 'metadata.json'),
-               variant=['full'] + [str(s) for s in SUBSET_SIZES])
+               variant=['full'] + SUBSET_VARIANTS)
 
 
 # Alias kept because every runner script and log in the repo refers to it.

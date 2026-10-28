@@ -409,6 +409,41 @@ def nested_perturbation_subsets(
     return result
 
 
+def context_breadth_subset(
+    perturbations: np.ndarray,
+    datasets: np.ndarray,
+    dataset_to_context: dict[str, str],
+    min_contexts: int,
+    ctrl_key: str = 'control',
+) -> tuple[np.ndarray, np.ndarray]:
+    """Cells of perturbations measured in at least `min_contexts` distinct cell contexts.
+
+    A deterministic, one-line rule for a benchmark tier: no quota, no random fill.
+    Breadth is counted over CONTEXTS (cell line, or cell type for primary cells), not
+    datasets, so a study that contributes many datasets from one context (Marson: 12
+    donor x condition datasets, all primary T cells) counts once.  Thresholds nest by
+    construction: min_contexts=k+1 selects a subset of min_contexts=k.
+
+    Returns (sorted cell indices, selected perturbation labels).
+    """
+    import pandas as pd
+
+    perturbations = np.asarray(perturbations).astype(str)
+    datasets = np.asarray(datasets).astype(str)
+    missing = sorted(set(np.unique(datasets)) - set(dataset_to_context))
+    if missing:
+        raise KeyError(f'no context for datasets: {missing}')
+    pert = perturbations != ctrl_key
+    pairs = pd.DataFrame({'p': perturbations[pert], 'd': datasets[pert]}).drop_duplicates()
+    pairs['c'] = pairs['d'].map(dataset_to_context)
+    breadth = pairs.groupby('p')['c'].nunique()
+    keep = np.sort(breadth.index[breadth >= int(min_contexts)].to_numpy().astype(str))
+    idx = np.flatnonzero(pert & np.isin(perturbations, keep))
+    logging.info(f'>= {min_contexts} contexts: {len(keep):,} of {len(breadth):,} '
+                 f'perturbations, {len(idx):,} of {int(pert.sum()):,} cells')
+    return idx, keep
+
+
 def _auto_group_contexts(contexts: np.ndarray) -> dict[str, list[str]]:
     """Group context names by publication prefix (AuthorYear)."""
     import re

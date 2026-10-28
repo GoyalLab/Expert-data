@@ -1,7 +1,7 @@
 # I/O
 datasheet: 'resources/datasets/meta/training.csv'
-output_dir: '/projects/b1042/GoyalLab/lschwartz/dl/data/merge'
-cache_dir: '/projects/b1042/GoyalLab/lschwartz/dl/perturb-seq/data'
+output_dir: '${EXPERT_MERGE_DIR:-data/merge}'
+cache_dir: '${EXPERT_CACHE_DIR:-data/cache}'
 
 # Set a slightly higher number of control cells to get more robust efficiency scores
 n_ctrl: 10000

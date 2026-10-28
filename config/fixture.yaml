@@ -1,0 +1,58 @@
+# Fast A/B fixture config.
+#
+# Purpose: a ~1.5-2.5 h end-to-end run that spans all THREE gene-space clusters, so a
+# canonical-store refactor can be validated without a 21-dataset production run.
+#
+#   38,606-symbol CellRanger  -> Zhuang2026 (row-subset)
+#   18,130-Ensembl            -> Marson2025_D4_Rest (row-subset)
+#   ~8-9k Replogle panel      -> ReplogleWeissman2022_rpe1 (symbol index)
+#                                ReplogleWeissman2025_HepG2 (Ensembl index -> exercises
+#                                ens_to_symbol, the 4th vocabulary flavour)
+#
+# The raw inputs are built by scripts/build_fixture.py into cache_dir/raw:
+# HepG2 and rpe1 are symlinks to the production raw files, Zhuang2026 and
+# Marson2025_D4_Rest are row-subsets.  download_dataset skips whenever the output path
+# exists, so nothing is re-downloaded.
+#
+# IMPORTANT: cache_dir is a DEDICATED tree.  CACHE_DIR is blacklisted from the config
+# hash, so processed/ prepared/ efficiencies/ are shared across runs -- pointing this at
+# the production cache would overwrite the production intermediates.
+
+# I/O -- dedicated fixture trees, never the production ones
+datasheet: 'resources/datasets/meta/fixture.csv'
+output_dir: '${EXPERT_OUTPUT_DIR:-data/fixture}'
+cache_dir: '${EXPERT_FIXTURE_DIR:-data/fixture_cache}'
+
+# Match config/merge.yaml exactly so the fixture exercises the production code paths
+n_ctrl: 10000
+min_cells_per_perturbation: 50
+min_cells_per_class: 10
+merge_method: 'concat_on_disk'
+defer_compression: true          # keeps the compress_database / h5repack rule in the DAG
+
+# Slurm config -- mirrors merge.yaml, with min_mem 50 (NOT 220) so jobs land on
+# 'genomics' rather than being force-routed to 'genomics-himem'
+resources:
+  memory:
+    min_mem: 50
+    default: 200
+    max_mem: 220
+
+  partitions:
+    default: 'genomics'
+    high_mem: 'genomics-himem'
+    gpu: 'gengpu'
+
+  jobs:
+    meta_info:
+      time: '4:00:00'
+      mem: '60GB'
+    filter_cells_by_efficiency:
+      time: '8:00:00'
+      threads: 4
+    merge_datasets:
+      time: '8:00:00'
+      mem: '50GB'
+    gen_benchmark_split:
+      time: '8:00:00'
+      mem: '100GB'      # production OOM-killed twice at the 20GB default

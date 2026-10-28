@@ -21,6 +21,8 @@ REPO_ROOT = Path(__file__).resolve().parent.parent
 if str(REPO_ROOT) not in sys.path:
     sys.path.insert(0, str(REPO_ROOT))
 
+from _requires import requires  # noqa: E402
+
 from src.decode import (  # noqa: E402
     decodability, delta_vs_control, normalize, rank_genes_by_separability)
 from src.pseudobulk import (  # noqa: E402
@@ -42,6 +44,7 @@ def main() -> None:
                     default=['ReplogleWeissman2022_rpe1', 'ReplogleWeissman2025_HepG2'])
     ap.add_argument('--n-hvg', type=int, default=3000)
     args = ap.parse_args()
+    requires(args.store, what='a canonical store')
     logging.basicConfig(level=logging.INFO, format='%(levelname)s %(message)s')
     store = Path(args.store)
 

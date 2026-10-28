@@ -6,6 +6,12 @@ __pycache__/
 .claude
 logs
 .logs
+.archive
 results
 scratch
 figures
+
+# site-specific paths and scheduler settings
+.env.site
+PUBLISH_AUDIT.md
+.mailmap

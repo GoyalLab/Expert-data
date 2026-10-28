@@ -25,11 +25,17 @@ def main(datasets, arrays_path, parts, out_pert, out_ctrl, out_zs,
     symbols = np.asarray(z['symbols']).astype(str)
     fm = z['feature_mask'] if 'feature_mask' in z.files else None
     d2i = {d: i for i, d in enumerate(sorted(datasets))} if fm is not None else None
+    # Panel membership as its own varm layer, so training can mask with it WITHOUT the
+    # selection being baked into X (which would be an unreproducible, label-derived
+    # transformation of the model input at inference time).
+    keys = [f'colmask__{d}' for d in sorted(datasets)]
+    panel = (np.stack([z[k] for k in keys], axis=1)
+             if all(k in z.files for k in keys) else None)
 
     stats = materialize_combine(
         list(parts), list(datasets), symbols,
         out_pert=out_pert, out_ctrl=out_ctrl, out_zs=out_zs,
-        feature_mask=fm, dataset_to_mask_idx=d2i,
+        feature_mask=fm, dataset_to_mask_idx=d2i, panel_mask=panel,
         compression=(compression or None))
     logging.info(f'combine stats: {stats}')
     Path(str(out_pert) + '.stats.json').write_text(json.dumps(stats, indent=2, default=str))

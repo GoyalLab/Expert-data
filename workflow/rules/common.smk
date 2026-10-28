@@ -81,6 +81,10 @@ PB_FSTAT_VARIANT = str(config.get('fstat_variant', 'rep'))
 # --- gene selection (RECIPE hash) ---
 GENE_SELECTION = str(config.get('gene_selection', 'hvg'))
 N_GENES_PER_DATASET = int(config.get('n_genes_per_dataset', 500))
+# Baking the panel into X is a label-derived transform of the model INPUT that no
+# query dataset can reproduce, so it is off by default: X keeps every union gene
+# the dataset measured, and the panel rides along in varm for train-time masking.
+ZERO_PAD_SELECTION = bool(config.get('zero_pad_selection', False))
 
 N_EFF_BATCHES = int(config.get('n_eff_batches', 16))
 EFF_BATCH_IDS = list(range(N_EFF_BATCHES))

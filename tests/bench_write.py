@@ -1,4 +1,11 @@
+import sys
+from pathlib import Path
+
 import h5py, numpy as np, time, os, tempfile
+
+sys.path.insert(0, str(Path(__file__).resolve().parent))
+from _requires import requires_env  # noqa: E402
+requires_env('GPFS_OUT', what='a shared-filesystem scratch dir to benchmark against')
 rng=np.random.default_rng(0)
 N=60_000_000
 d=rng.integers(0,100,N,dtype=np.int16); i=rng.integers(0,3000,N,dtype=np.int32)

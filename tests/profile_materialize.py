@@ -1,12 +1,16 @@
 """Per-phase timing of the materialize inner loop on one real store block."""
 import sys, time, json
 from pathlib import Path
-sys.path.insert(0, '/path/to/projects/perturbation_prediction/ExPert/ExPert-data')
+REPO_ROOT = Path(__file__).resolve().parent.parent
+if str(REPO_ROOT) not in sys.path:
+    sys.path.insert(0, str(REPO_ROOT))
 import numpy as np, h5py, tempfile, os
 
-STORE = Path('/projects/b1042/GoyalLab/lschwartz/dl/perturb-seq/store/27dab279946b4ea6')
+STORE = Path(os.path.join(os.environ.get('EXPERT_STORE_DIR', 'data/store'), os.environ.get('EXPERT_STORE_HASH', '27dab279946b4ea6')))
 ds = sys.argv[1] if len(sys.argv) > 1 else 'ReplogleWeissman2022_rpe1'
 xp = STORE / 'cells' / f'{ds}.h5ad'
+from _requires import requires  # noqa: E402
+requires(xp, what='a canonical store block')
 print(f'block: {ds}\n  X: {xp}  ({xp.stat().st_size/1024**3:.2f} GB on disk)')
 
 ROW_CHUNK = 20_000

@@ -1,11 +1,18 @@
 """Where does materialize_part actually spend its time? Phase-timed, one dataset."""
 import sys, time
 from pathlib import Path
-sys.path.insert(0, '/path/to/projects/perturbation_prediction/ExPert/ExPert-data')
+REPO_ROOT = Path(__file__).resolve().parent.parent
+if str(REPO_ROOT) not in sys.path:
+    sys.path.insert(0, str(REPO_ROOT))
 import numpy as np, h5py
 from src.select import load_sidecars, scale_efficiency
 
+if len(sys.argv) < 4:
+    raise SystemExit(f'usage: {sys.argv[0]} <dataset> <recipe.npz> <store/HASH>')
 ds = sys.argv[1]; arrays = sys.argv[2]; store = Path(sys.argv[3])
+
+from _requires import requires  # noqa: E402
+requires(arrays, store / 'cells' / f'{ds}.h5ad', what='a real recipe and store block')
 t = {}
 t0 = time.time(); z = np.load(arrays, allow_pickle=False)
 col_idx = z['col_idx']; mask = z[f'mask__{ds}']

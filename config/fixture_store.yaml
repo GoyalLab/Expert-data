@@ -1,0 +1,97 @@
+# Canonical-store config: drives the Phase 2-4 rules over the 22-dataset store.
+#
+# The per-dataset params here MUST hash to the same DATASET_HASH as the store that was
+# already built (27dab279946b4ea6), or the rules will point at an empty directory.
+# Those params are exactly: qc, n_ctrl, seed, single_perturbations_only,
+# perturbation_col, ctrl_key, n_hvg  (see src/workflow_utils.DATASET_PARAM_KEYS).
+# Everything else -- the dataset list, pool thresholds, merge/benchmark settings --
+# lives in the RECIPE hash and cannot invalidate a block.
+
+datasheet: 'resources/datasets/meta/fixture.csv'
+output_dir: '${EXPERT_OUTPUT_DIR:-data/store_fixture}'
+cache_dir: '${EXPERT_CACHE_DIR:-data/cache}'
+store_dir: '${EXPERT_STORE_DIR:-data/store}'
+
+# --- must match the built store's dataset hash ---
+n_ctrl: 10000
+
+# --- selection-time params (recipe hash only) ---
+min_cells_per_perturbation: 50
+min_cells_per_class: 10
+n_eff_batches: 16
+defer_compression: true
+
+resources:
+  memory:
+    min_mem: 50
+    default: 200
+    max_mem: 220
+  # `short` (4 h wall) has ~350 nodes vs a swamped `genomics`; every rule here
+  # finishes well inside 4 h, so it schedules far faster.
+  account: '${SLURM_ACCOUNT:-}'
+  partitions:
+    default: 'short'
+    high_mem: 'normal'
+    gpu: 'gengpu'
+  jobs:
+    materialize:
+      time: '3:30:00'
+      mem: '64GB'
+    build_recipe:
+      time: '2:00:00'
+      mem: '32GB'
+    subset_db:
+      time: '3:30:00'
+      mem: '48GB'
+    gen_ood_splits:
+      time: '2:00:00'
+      mem: '48GB'
+    materialize_part:
+      time: '3:30:00'
+      mem: '48GB'
+    gene_fstat:
+      time: '2:00:00'
+      mem: '48GB'
+    canonicalize:
+      time: '3:30:00'
+      mem: '32GB'      # measured max across all 22 was 12.5 GB
+    # Right-sized from 286 measured batches (first full run):
+    #   fit     mean 22.2 min, max RSS  7.73 GB  (was 32 GB -> 4.1x waste)
+    #   batch   mean  9.9 min, max RSS 10.36 GB  (was 24 GB -> 2.3x waste)
+    #   gather  mean  0.8 min, max RSS  1.67 GB  (was 16 GB -> 9.6x waste)
+    # Memory scales linearly with cells/batch (corr 0.950), so the batch ceiling is set
+    # by XAtlas2025_HEK293T at ~247k cells/batch.  Smaller requests schedule faster on a
+    # busy cluster, which matters more than the headroom here.
+    efficiency_fit:
+      time: '3:30:00'
+      mem: '16GB'
+    efficiency_batch:
+      time: '3:30:00'
+      mem: '16GB'
+    efficiency_gather:
+      time: '2:00:00'
+      mem: '4GB'
+
+benchmark_axes: [donor, cell_line, condition]
+benchmark_pair: {donor: cell_line}
+benchmark_max_ood_frac: 0.60
+benchmark_eval_cap: 10
+zs_min_cells_per_perturbation: 0
+zs_eval_cap: 10
+
+benchmark_subset_sizes: [200]
+
+# --- gene selection (mirrors config/store.yaml) ---
+fstat_variant: rep
+gene_selection: fstat
+n_genes_per_dataset: 500
+# false = X keeps every union gene the dataset measured; the panel is carried in
+# varm/panel_membership_per_dataset for masking at TRAIN time only.  Baking it in
+# would put label-derived structure in the input that inference cannot reproduce.
+zero_pad_selection: false
+pseudobulk_variants: [rep, meta, rep_eff]
+n_rep: 2
+min_cells_per_rep: 10
+meta_k_max: 4
+min_cells_per_meta: 20
+meta_sep_threshold: 2.0

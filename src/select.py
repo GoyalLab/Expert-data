@@ -400,6 +400,7 @@ def build_recipe(
     var_merge: str = 'union',
     gene_selection: str = 'hvg',
     n_genes_per_dataset: int = 500,
+    zero_pad_selection: bool = False,
     min_cells_per_class: int = 20,
     min_dataset_frac: float = 0.6,
     min_cells_per_perturbation: int = 50,
@@ -433,7 +434,14 @@ def build_recipe(
     else:
         raise ValueError(f"gene_selection must be 'hvg' or 'fstat', got "
                          f'{gene_selection!r}')
+    # The panel membership is always CARRIED (training may want to mask with it), but it
+    # is only baked into X when zero_pad_selection is on.  Baking it in is a supervised
+    # transformation of the INPUT: the mask is derived from perturbation labels, and no
+    # query dataset has an equivalent, so a model trained on hard-zeroed inputs sees a
+    # pattern it cannot be given at inference.  Storing the full values keeps that a
+    # reversible, train-time decision -- you can zero at load time, not un-zero.
     col_masks = cols.get('col_masks')
+    pad_masks = col_masks if zero_pad_selection else None
     pool = build_pool(sidecars, broad_keys,
                       min_cells_per_class=min_cells_per_class,
                       min_dataset_frac=min_dataset_frac)
@@ -447,12 +455,13 @@ def build_recipe(
     if raw_dir is not None:
         feature_mask, ds_to_idx = build_feature_mask(
             list(datasets), cols['col_idx'], vocab, raw_dir)
-        if col_masks is not None:
-            # Under zero-padding a dataset carries values ONLY for its own selection, so
-            # the mask has to mark the DESELECTED genes inactive too.  Leaving it at
-            # "measured" would tell downstream that those zeros are real measurements.
+        if pad_masks is not None:
+            # Only when the selection is baked into X: a deselected gene is then an
+            # unmeasured one as far as downstream can tell, so the mask must say so.
+            # Without zero-padding, feature_mask keeps its original meaning (what the
+            # dataset actually MEASURED), which is reproducible for a query dataset.
             for ds, j in ds_to_idx.items():
-                feature_mask[:, j] *= col_masks[ds].astype(feature_mask.dtype)
+                feature_mask[:, j] *= pad_masks[ds].astype(feature_mask.dtype)
 
     total = int(sum(int(m.sum()) for m in masks.values()))
     recipe = {
@@ -463,6 +472,7 @@ def build_recipe(
             'n_hvg': n_hvg, 'var_merge': var_merge,
             'gene_selection': gene_selection,
             'n_genes_per_dataset': n_genes_per_dataset,
+            'zero_pad_selection': zero_pad_selection,
             'min_cells_per_class': min_cells_per_class,
             'min_dataset_frac': min_dataset_frac,
             'min_cells_per_perturbation': min_cells_per_perturbation,
@@ -480,7 +490,7 @@ def build_recipe(
                         for ds, m in masks.items()},
     }
     return {'recipe': recipe, 'col_idx': cols['col_idx'], 'symbols': cols['symbols'],
-            'col_masks': col_masks,
+            'col_masks': col_masks, 'pad_masks': pad_masks,
             'masks': masks, 'pool': pool, 'sidecars': sidecars,
             'eff_scaled': eff_scaled, 'feature_mask': feature_mask,
             'dataset_to_mask_idx': ds_to_idx, 'zs_masks': zs_masks}
@@ -495,9 +505,11 @@ def save_recipe(sel: dict, path: str | Path) -> None:
         'symbols': np.asarray(sel['symbols'], dtype='U'),
         **{f'mask__{ds}': m for ds, m in sel['masks'].items()},
         **{f'zs__{ds}': m for ds, m in sel.get('zs_masks', {}).items()},
-        # per-dataset column membership -- what materialize zero-pads with
+        # Panel membership per dataset.  ALWAYS stored: when zero_pad_selection is off
+        # this is metadata for training-time masking, not something baked into X.
         **{f'colmask__{ds}': m
            for ds, m in (sel.get('col_masks') or {}).items()},
+        'zero_padded': np.array([bool(sel.get('pad_masks') is not None)]),
     }
     # The feature mask is derived from the raw /var files, so persisting it here means
     # materialize does not have to re-read 22 raw headers.

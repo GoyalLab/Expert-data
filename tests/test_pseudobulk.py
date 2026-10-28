@@ -21,6 +21,8 @@ REPO_ROOT = Path(__file__).resolve().parent.parent
 if str(REPO_ROOT) not in sys.path:
     sys.path.insert(0, str(REPO_ROOT))
 
+from _requires import requires  # noqa: E402
+
 from src.pseudobulk import (  # noqa: E402
     assign_replicates, build_variants, efficiency_weights, load_block_obs,
     load_efficiency, stream_pseudobulk)
@@ -116,6 +118,7 @@ def main() -> None:
     ap.add_argument('--with-meta', action='store_true',
                     help='also build clustered meta-cells (needs the eff PCA fit)')
     args = ap.parse_args()
+    requires(args.store, what='a canonical store')
     logging.basicConfig(level=logging.INFO, format='%(levelname)s %(message)s')
 
     test_assign_replicates()

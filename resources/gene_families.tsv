@@ -1,0 +1,42 @@
+# Perturbation families. Two independent matchers, both optional per row:
+#
+#   symbol_regex  matched against the gene symbol -- high precision for named complexes
+#                 whose members share a prefix (MED*, RPL*, PSM*)
+#   keywords      matched against the gene's NCBI summary + UniProt [FUNCTION] text from
+#                 the gene description database; '|'-separated, case-insensitive, matched
+#                 on word boundaries
+#
+# A gene is scored against every family (symbol hit = 3 points, each distinct keyword hit
+# = 1) and assigned to its highest-scoring family; ties break toward the family listed
+# FIRST, so specific complexes must precede general classes. Genes scoring zero are
+# `unassigned`. Edit and re-run; nothing else changes.
+#
+# family	symbol_regex	keywords
+Ribosome (cytoplasmic)	^RP[LS]\d	ribosomal protein|40S ribosomal|60S ribosomal
+Ribosome (mitochondrial)	^MRP[LS]\d	mitochondrial ribosomal|mitoribosome
+Mediator complex	^MED\d+$	mediator complex|mediator of RNA polymerase II
+RNA polymerase	^POLR\d	RNA polymerase I|RNA polymerase II|RNA polymerase III|DNA-directed RNA polymerase
+Spliceosome	^(SNRP|SF3[AB]|PRPF|LSM\d|SRSF|U2AF)	spliceosome|spliceosomal|pre-mRNA splicing|mRNA splicing
+Proteasome	^PSM[ABCDEFG]	proteasome|proteasomal
+Chaperone / HSP	^(HSP[AB0-9]|DNAJ|CCT\d|TCP1)	chaperone|heat shock protein|protein folding|chaperonin
+Translation initiation	^EIF\d	translation initiation factor|initiation of translation
+Translation elongation	^EEF\d	translation elongation factor|elongation factor
+tRNA synthetase	^[A-Z]ARS\d?$	aminoacyl-tRNA synthetase|tRNA ligase|charging of tRNA
+Nuclear pore	^NUP\d	nuclear pore|nucleoporin|nucleocytoplasmic transport
+Cohesin / condensin	^(SMC\d|RAD21|STAG[123]|NIPBL|NCAP)	cohesin|condensin|sister chromatid cohesion
+Histone	^(H[1-4][A-Z0-9-]|HIST\d)	histone H1|histone H2|histone H3|histone H4|nucleosome core
+Chromatin remodeller	^(SMARC|ARID\d|CHD\d|BRD\d|KDM\d|KMT2|SETD\d|EZH\d|HDAC\d|DNMT\d)	chromatin remodel|histone methyltransferase|histone deacetylase|histone acetyltransferase|chromatin modif
+COPI / COPII / vesicle	^(COP[AB]|SEC\d|SAR1|ARCN1)	vesicle-mediated transport|COPI|COPII|coat protein complex|vesicle coat
+V-ATPase	^ATP6V	vacuolar ATPase|V-ATPase|vacuolar-type
+Oxidative phosphorylation	^(NDUF|UQCR|COX\d|ATP5)	oxidative phosphorylation|respiratory chain|electron transport chain|mitochondrial complex I|mitochondrial complex IV
+Mitochondrial import	^(TIMM|TOMM)	mitochondrial import|translocase of the outer|translocase of the inner|mitochondrial protein import
+Exosome / RNA decay	^(EXOSC|XRN\d|DCP\d|CNOT\d|DIS3)	RNA exosome|mRNA decay|mRNA degradation|deadenylation|nonsense-mediated
+RNA-binding protein	^(RBM|HNRNP|ELAVL|PUM\d|PABPC|CELF|MBNL|DDX|DHX)	RNA-binding protein|binds RNA|RNA helicase|mRNA stability
+Ubiquitin ligase	^(UBE\d|UBA\d|RNF\d|TRIM\d|CUL\d|FBXW|FBXO)	ubiquitin ligase|ubiquitin-protein|E3 ligase|ubiquitin-conjugating|deubiquitinat
+Kinase	^(CDK\d|MAPK\d|AKT\d|PIK3|GSK3|CSNK|PRKA|STK\d|AURK)	protein kinase|serine/threonine kinase|tyrosine kinase|phosphorylates
+Phosphatase		protein phosphatase|dephosphorylat
+Transcription factor	^(ZNF\d|FOX[A-Z]|SOX\d|HOX[A-D]|GATA\d|IRF\d|STAT\d|SMAD\d)	transcription factor|transcriptional activator|transcriptional repressor|sequence-specific DNA
+DNA repair / damage	^(BRCA\d|RAD5|MSH\d|MLH\d|ERCC\d|FANC)	DNA repair|DNA damage response|double-strand break|mismatch repair|nucleotide excision
+Cell cycle / mitosis	^(CCN[ABDE]\d|CDC\d|PLK\d|BUB\d|MAD2)	cell cycle|mitotic spindle|cytokinesis|kinetochore|G1/S|G2/M
+Membrane transporter	^(SLC\d|ABC[ABCDG])	solute carrier|transmembrane transporter|ion channel|ATP-binding cassette
+Metabolic enzyme		biosynthesis|metabolic process|catalyzes the|dehydrogenase|synthase

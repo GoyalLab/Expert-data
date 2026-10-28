@@ -1,6 +1,7 @@
 from snakemake.io import load_configfile
 import hashlib
 import os
+import re
 import yaml
 import numpy as np
 import pandas as pd
@@ -17,6 +18,40 @@ def recursive_update(d1, d2):
         else:
             d1[k] = v
 
+# Path-valued config keys get shell-style ${VAR} / ${VAR:-default} expansion, so a
+# published config can carry a portable default while a site overrides it from the
+# environment -- no absolute cluster paths in the repo.  Paths are blacklisted from both
+# hashes, so expansion can never move an existing store or DB.
+PATH_KEYS = frozenset({'output_dir', 'cache_dir', 'store_dir', 'log_dir', 'plot_dir',
+                       'datasheet'})
+_VAR_RE = re.compile(r'\$\{(\w+)(?::-([^}]*))?\}')
+
+
+def expand_env(value: str) -> str:
+    """`${EXPERT_CACHE_DIR:-data/cache}` -> the env var, else the inline default."""
+    return _VAR_RE.sub(
+        lambda m: os.environ.get(m.group(1)) or (m.group(2) if m.group(2) else ''),
+        value)
+
+
+def expand_config_paths(config: dict) -> dict:
+    for k in PATH_KEYS & set(config):
+        if isinstance(config[k], str):
+            config[k] = expand_env(config[k])
+    # Slurm account/partitions are site-specific in the same way; an unexpanded
+    # '${SLURM_ACCOUNT:-}' would otherwise reach sbatch as a literal account name.
+    res = config.get('resources')
+    if isinstance(res, dict):
+        if isinstance(res.get('account'), str):
+            res['account'] = expand_env(res['account'])
+        parts = res.get('partitions')
+        if isinstance(parts, dict):
+            for k, v in parts.items():
+                if isinstance(v, str):
+                    parts[k] = expand_env(v)
+    return config
+
+
 def load_configs(wf, default_config="config/defaults.yaml"):
     # Load default config
     config = load_configfile(default_config)
@@ -30,7 +65,7 @@ def load_configs(wf, default_config="config/defaults.yaml"):
     recursive_update(config, wf.overwrite_config)
     # Check config parameters
     check_config(config)
-    return config
+    return expand_config_paths(config)
 
 def hash(s: str, d: int = 4):
     return hashlib.shake_128(s.encode('utf-8')).hexdigest(d)
@@ -91,6 +126,7 @@ RECIPE_PARAM_KEYS = (
     'var_merge',
     'gene_selection',
     'n_genes_per_dataset',
+    'zero_pad_selection',
     # perturbation pool
     'min_cells_per_class',
     'min_dataset_frac',
@@ -119,7 +155,8 @@ def get_recipe_hash(p: dict, dataset_indices: list[str], d: int = 8) -> str:
     #   * 'hvg' is the historical behaviour, and hashing it as absent keeps every DB
     #     built before gene_selection existed reachable from its own config.
     mode = items.get('gene_selection') or 'hvg'
-    inert = ({'n_genes_per_dataset'} if mode == 'hvg' else {'n_hvg', 'var_merge'})
+    inert = ({'n_genes_per_dataset', 'zero_pad_selection'} if mode == 'hvg'
+             else {'n_hvg', 'var_merge'})
     if mode == 'hvg':
         inert.add('gene_selection')
     items = {k: v for k, v in items.items() if k not in inert}

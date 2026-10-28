@@ -436,6 +436,7 @@ def materialize_combine(
     out_zs: str | Path | None = None,
     feature_mask: np.ndarray | None = None,
     dataset_to_mask_idx: dict[str, int] | None = None,
+    panel_mask: np.ndarray | None = None,
     dtype=np.int16,
     compression: str | None = None,
     compression_level: int | None = 1,
@@ -524,6 +525,12 @@ def materialize_combine(
             if feature_mask is not None:
                 vg.create_dataset('feature_mask_per_dataset',
                                   data=np.asarray(feature_mask, dtype=np.float64))
+            if panel_mask is not None:
+                # Which genes the separability selection picked FOR EACH DATASET.  X
+                # carries every union gene the dataset measured; masking with this is a
+                # training-time choice, deliberately not baked into the stored values.
+                vg.create_dataset('panel_membership_per_dataset',
+                                  data=np.asarray(panel_mask, dtype=np.float64))
             ug = fo.create_group('uns')
             if dataset_to_mask_idx is not None:
                 dg = ug.create_group('dataset_to_mask_idx')

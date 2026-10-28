@@ -32,6 +32,7 @@ rule build_recipe:
         zs_eval_cap = int(config.get('zs_eval_cap', 10)),
         gene_selection = GENE_SELECTION,
         n_genes_per_dataset = N_GENES_PER_DATASET,
+        zero_pad_selection = ZERO_PAD_SELECTION,
         seed = config['seed']
     resources:
         **get_job_resources(config['resources'], job_name='build_recipe',

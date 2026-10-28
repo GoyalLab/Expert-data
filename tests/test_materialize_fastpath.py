@@ -5,12 +5,19 @@ monotone over its valid entries -- asserted directly here against the real recip
 """
 import sys, time
 from pathlib import Path
-sys.path.insert(0, '/path/to/projects/perturbation_prediction/ExPert/ExPert-data')
+REPO_ROOT = Path(__file__).resolve().parent.parent
+if str(REPO_ROOT) not in sys.path:
+    sys.path.insert(0, str(REPO_ROOT))
+import os
 import numpy as np, h5py, json
 
-STORE = Path('/projects/b1042/GoyalLab/lschwartz/dl/perturb-seq/store/27dab279946b4ea6')
-OUT = Path('/projects/b1042/GoyalLab/lschwartz/dl/data/store_out/963044872df9d6a8')
+STORE = Path(os.path.join(os.environ.get('EXPERT_STORE_DIR', 'data/store'), os.environ.get('EXPERT_STORE_HASH', '27dab279946b4ea6')))
+OUT = Path(os.path.join(os.environ.get('EXPERT_OUTPUT_DIR', 'data/store_out'), os.environ.get('EXPERT_DB_HASH', '963044872df9d6a8')))
 ds = sys.argv[1] if len(sys.argv) > 1 else 'ReplogleWeissman2022_rpe1'
+
+from _requires import requires  # noqa: E402
+requires(STORE / 'cells' / f'{ds}.h5ad', OUT / 'recipe.npz',
+         what='a canonical store block and a materialised DB recipe')
 
 col_idx = np.asarray(np.load(OUT / 'recipe.npz', allow_pickle=False)['col_idx'],
                      dtype=np.int64)

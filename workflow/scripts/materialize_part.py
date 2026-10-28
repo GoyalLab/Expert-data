@@ -26,8 +26,11 @@ def main(store_dir, dataset, arrays_path, out_part, log=None):
     masks = {dataset: z[f'mask__{dataset}']}
     zs_masks = ({dataset: z[f'zs__{dataset}']}
                 if f'zs__{dataset}' in z.files else None)
+    # colmask__ is always present as METADATA; it is only applied to X when the recipe
+    # says the selection was baked in (zero_pad_selection).
+    padded = bool(z['zero_padded'][0]) if 'zero_padded' in z.files else True
     col_masks = ({dataset: z[f'colmask__{dataset}']}
-                 if f'colmask__{dataset}' in z.files else None)
+                 if (padded and f'colmask__{dataset}' in z.files) else None)
 
     sidecars = {dataset: load_sidecars(store_dir, dataset)}
     obs_by_ds = {dataset: sidecars[dataset]['obs']}

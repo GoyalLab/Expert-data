@@ -1,5 +1,6 @@
 import requests
 import scanpy as sc
+import sys
 from tqdm import tqdm
 import subprocess
 import shutil
@@ -666,32 +667,100 @@ def get_file_size(url, verbose=False):
         return f"Error: {e}"
 
 
-def download_file(url, output_path, cache=True) -> str:
-    if not os.path.exists(output_path) or not cache:
+def remote_size(url, timeout=60) -> int | None:
+    """Content-Length from a HEAD, falling back to a 1-byte ranged GET.
+
+    figshare's ndownloader answers HEAD with 403 but serves GET, so a HEAD-only probe
+    would wrongly report those files as unavailable.
+    """
+    try:
+        r = requests.head(url, allow_redirects=True, timeout=timeout)
+        n = int(r.headers.get('content-length', 0))
+        if r.ok and n > 0:
+            return n
+    except requests.exceptions.RequestException:
+        pass
+    try:
+        r = requests.get(url, stream=True, allow_redirects=True, timeout=timeout,
+                         headers={'Range': 'bytes=0-0'})
+        r.close()
+        cr = r.headers.get('content-range', '')
+        if '/' in cr:
+            return int(cr.rsplit('/', 1)[1])
+    except (requests.exceptions.RequestException, ValueError):
+        pass
+    return None
+
+
+def download_file(url, output_path, cache=True, max_retries=10, timeout=60,
+                  chunk_size=8 * 1024 * 1024) -> str:
+    """Download `url` to `output_path`, RESUMING a partial transfer across retries.
+
+    The 100+ GB sources here (Marson S3, figshare) take hours, and a single dropped
+    connection used to mean starting over.  Bytes land in `<output>.part` and are
+    continued with a Range request; the file is only moved into place once its size
+    matches Content-Length, so a truncated transfer can never masquerade as a complete
+    dataset.  Servers that ignore Range (200 instead of 206) restart cleanly from 0.
+    """
+    import time
+
+    total = remote_size(url, timeout=timeout)
+    if os.path.exists(output_path) and cache:
+        have = os.path.getsize(output_path)
+        if total is None or have == total:
+            return f'Cached dataset: {output_path} ({have:,} B)'
+        logging.warning(f'{output_path}: {have:,} B on disk vs {total:,} B remote; '
+                        f're-downloading')
+
+    part = f'{output_path}.part'
+    show = sys.stderr.isatty()
+    for attempt in range(1, max_retries + 1):
+        have = os.path.getsize(part) if os.path.exists(part) else 0
+        if total is not None and have == total:
+            break
+        headers = {'Range': f'bytes={have}-'} if have else {}
+        mode = 'ab' if have else 'wb'
         try:
-            # Send a GET request to download the file
-            response = requests.get(url, stream=True)
-            response.raise_for_status()  # Check for errors
-
-            # Get the total file size from the response headers (in bytes)
-            total_size_in_bytes = int(response.headers.get('content-length', 0))
-
-            # Initialize the progress bar with the total file size
-            progress_bar = tqdm(total=total_size_in_bytes, unit='B', unit_scale=True, desc=output_path)
-
-            # Write the file to the output path in chunks
-            with open(output_path, 'wb') as file:
-                for chunk in response.iter_content(chunk_size=8 * 1024 * 1024):
-                    if chunk:
-                        file.write(chunk)
-                        progress_bar.update(len(chunk))  # Update the progress bar
-            progress_bar.close()
-
-            return f"Successfully downloaded file: {output_path}"
+            with requests.get(url, stream=True, headers=headers, timeout=timeout,
+                              allow_redirects=True) as r:
+                if have and r.status_code == 200:   # Range ignored -> start over
+                    logging.warning(f'{url}: server ignored Range, restarting')
+                    have, mode = 0, 'wb'
+                elif have and r.status_code != 206:
+                    r.raise_for_status()
+                else:
+                    r.raise_for_status()
+                if total is None:
+                    cl = int(r.headers.get('content-length', 0))
+                    total = (have + cl) if cl else None
+                bar = tqdm(total=total, initial=have, unit='B', unit_scale=True,
+                           desc=os.path.basename(output_path), disable=not show)
+                with open(part, mode) as f:
+                    for block in r.iter_content(chunk_size=chunk_size):
+                        if block:
+                            f.write(block)
+                            bar.update(len(block))
+                bar.close()
+            have = os.path.getsize(part)
+            if total is None or have >= total:
+                break
+            logging.warning(f'{output_path}: stream ended at {have:,}/{total:,} B '
+                            f'(attempt {attempt}/{max_retries})')
         except requests.exceptions.RequestException as e:
-            raise ConnectionError(f"Error downloading file: {e}")
+            if attempt == max_retries:
+                raise ConnectionError(f'Error downloading {url} after {attempt} '
+                                      f'attempts: {e}')
+            logging.warning(f'{output_path}: {type(e).__name__} on attempt '
+                            f'{attempt}/{max_retries}: {e}')
+        time.sleep(min(60, 2 ** attempt))
     else:
-        return "Cached dataset"
+        raise ConnectionError(f'{url}: incomplete after {max_retries} attempts')
+
+    have = os.path.getsize(part)
+    if total is not None and have != total:
+        raise ConnectionError(f'{output_path}: got {have:,} B, expected {total:,} B')
+    os.replace(part, output_path)
+    return f'Successfully downloaded file: {output_path} ({have:,} B)'
 
 
 def get_dataset(url, dataset_name, output_path, cache=True):
@@ -800,7 +869,8 @@ def create_sbatch_script(base_conf, ds, conda_env='harmonize', script='main_ques
     log_file = f'{log_dir}/snakemake.log'
     # define sbatch parameters
     sbatch_params = {
-        'account': 'b1042',
+        # site-specific: set SBATCH_ACCOUNT (sbatch honours it) rather than hardcoding
+        'account': os.environ.get('SBATCH_ACCOUNT', ''),
         'partition': partition,
         'job-name': 'ExPert',
         'nodes': 1,
