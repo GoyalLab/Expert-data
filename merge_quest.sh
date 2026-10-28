@@ -6,8 +6,6 @@
 #SBATCH --time 48:00:00
 #SBATCH --output logs/merge/%j/snakemake.log
 #SBATCH --verbose
-#SBATCH --mail-user=leon.schwartz@northwestern.edu
-#SBATCH --mail-type=END,FAIL
 
 echo "Setting up pipeline environment..."
 module purge
