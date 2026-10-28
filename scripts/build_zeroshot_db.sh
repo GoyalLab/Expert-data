@@ -26,8 +26,6 @@
 #SBATCH --time 48:00:00
 #SBATCH --output logs/zeroshot/%x-%j.log
 #SBATCH --verbose
-#SBATCH --mail-user=leon.schwartz@northwestern.edu
-#SBATCH --mail-type=END,FAIL
 
 # NB: -u is enabled only after sourcing the profile, which references unbound
 # vars (e.g. BASHRCSOURCED in /etc/bashrc) and would otherwise abort the job.

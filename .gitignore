@@ -14,4 +14,3 @@ figures
 # site-specific paths and scheduler settings
 .env.site
 PUBLISH_AUDIT.md
-.mailmap

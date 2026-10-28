@@ -5,8 +5,6 @@
 #SBATCH --mem 20GB
 #SBATCH --time 4:00:00
 #SBATCH --output logs/upload_%j.log
-#SBATCH --mail-user=leon.schwartz@northwestern.edu
-#SBATCH --mail-type=END,FAIL
 #SBATCH --verbose
 
 # Specify the run directory
